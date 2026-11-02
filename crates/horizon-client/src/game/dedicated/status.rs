@@ -49,28 +49,11 @@ impl Game<'_> {
                     super::events::since(since.trim().parse().unwrap_or(0))
                 }
                 Some(("management", rest)) => self.management(state, rest),
-                // A proxy moving a player here (lan/arrivals.rs).
-                Some(("player-expect", rest)) => match self.lan.as_mut() {
-                    Some(host) => horizon_client::lan::arrivals::expect_request(
-                        &mut host.hub,
-                        rest,
-                        Instant::now(),
-                    ),
-                    None => json!({ "error": "the server is not open to players" }),
-                },
-                Some(("player-export", rest)) => self.player_export(rest),
-                Some(("player-import", rest)) => self.player_import(rest),
-                Some(("player-confirm", rest)) => self.player_confirm(rest),
-                Some(("player-release", rest)) => match self.lan.as_mut() {
-                    Some(host) => {
-                        horizon_client::lan::arrivals::release_request(&mut host.hub, rest)
-                    }
-                    None => json!({ "error": "the server is not open to players" }),
-                },
-                Some(("player-drop", rest)) => match self.lan.as_mut() {
-                    Some(host) => horizon_client::lan::arrivals::drop_request(&mut host.hub, rest),
-                    None => json!({ "error": "the server is not open to players" }),
-                },
+                // A proxy moving a player here or away (lan/arrivals.rs, transfer.rs): one log line
+                // for each request and what became of it.
+                Some((verb, rest)) if verb.starts_with("player-") => {
+                    self.player_request(verb, rest)
+                }
                 Some(("console", line)) => {
                     // Command feedback is logged as system chat; the reply carries the text alone.
                     let output: Vec<String> = capture_log(|| self.console_command(state, line))
