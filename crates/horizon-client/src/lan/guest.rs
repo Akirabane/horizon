@@ -308,6 +308,12 @@ pub struct Guest {
     pub death_time: u32,
     /// The join packets were sent (PlayerList.placeNewPlayer ran).
     pub placed: bool,
+    /// A player arriving from another server (`arrivals`): connected and
+    /// receiving the world, but not placed, so no one else sees, hears or
+    /// hurts it until the hand-over finishes.
+    pub held: bool,
+    /// The hub tick at which it was held, to drop it if its hand-over never comes.
+    pub held_since: u64,
     /// Root command names the mods took out of this player's command tree
     /// (`native_player_commands_sent`); their tree is sent without them.
     pub hidden_commands: Vec<String>,
@@ -474,6 +480,8 @@ impl Guest {
             dead: false,
             death_time: 0,
             placed: false,
+            held: false,
+            held_since: 0,
             hidden_commands: Vec::new(),
             flying_speed: 0.05,
             dimension: "minecraft:overworld".into(),

@@ -268,6 +268,8 @@ pub struct Hub {
     pub native_menu_events: Vec<super::menu::NativeMenuEvent>,
     /// Kicks waiting for the game thread to notify native mods.
     pending_kicks: Vec<HostEvent>,
+    /// The players a proxy said would arrive (`player-expect`).
+    pub arrivals: super::arrivals::Expectations,
     /// The entities players started and stopped tracking, collected by
     /// `collect_tracking`, for the game to tell the mods.
     pub native_tracking: Vec<TrackingBatch>,
@@ -641,6 +643,7 @@ impl Hub {
             mod_commands: (serde_json::Value::Null, None),
             native_menu_events: Vec::new(),
             pending_kicks: Vec::new(),
+            arrivals: Default::default(),
             native_tracking: Vec::new(),
             attachment_snapshots: Vec::new(),
             sync_attachments: false,
