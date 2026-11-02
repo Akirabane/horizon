@@ -144,6 +144,18 @@ every OS), the dedicated loop answers `server-status` with TPS, MSPT (average, P
 clock `/tick query` uses), players (name, UUID, address, ping), loaded chunks and uptime. It answers
 `console <line>` with the command's output.
 
+**Players arriving from another server.** A proxy that moves a player in from another server of the same
+version first sends `player-expect <uuid> [seconds]` on this endpoint (10 seconds by default, 60 at most;
+at most 64 players are expected at once). The next login of that player is then a *held* player: it gets
+the whole join sequence and the level around it (chunks, block and light changes, entities, the level's
+broadcasts), and answers the server's requests (teleport, chunk batch, loaded, keep-alive), but it is not
+placed: no join message, no player-list entry for the others, not among the entities they are shown, not
+simulated, and nothing else it sends is acted on. `player-drop <uuid>` forgets the expectation, and
+disconnects the held player without a save or a word to anyone. A player who never comes is reported in
+the log when the expectation runs out, and a held player nobody takes over is dropped after a minute.
+The requests are `lan/arrivals.rs`'s; the answers are one JSON line, `{"ok": true, ...}` or
+`{"error": "..."}`.
+
 **The headless engine** comes after perf-ticks-2's work lands: Resources split into shared and per-game, the
 game built in `Game::new`, the integrated server on its own thread. On that base:
 

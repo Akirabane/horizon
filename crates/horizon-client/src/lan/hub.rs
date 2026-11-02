@@ -929,6 +929,25 @@ impl Hub {
         }
     }
 
+    /// Disconnects the held player `uuid` and nothing else: no save (it was
+    /// never placed), no word to anyone (no one was told of it). Returns whether
+    /// there was one.
+    pub fn drop_held(&mut self, uuid: u128) -> bool {
+        let Some(g) = self
+            .guests
+            .iter_mut()
+            .find(|g| g.uuid == uuid && g.held && !g.placed)
+        else {
+            return false;
+        };
+        if g.left_reason.is_empty() {
+            g.left_reason = "dropped before its hand-over".to_owned();
+        }
+        g.sender
+            .disconnect(translatable("multiplayer.disconnect.generic", &[]));
+        true
+    }
+
     /// Lets go of what a proxy that stopped answering left behind: the players it
     /// said would come and did not, and the held players whose hand-over never
     /// finished. Neither may wait for ever, and the held player goes without a

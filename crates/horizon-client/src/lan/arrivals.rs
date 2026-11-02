@@ -8,6 +8,7 @@
 //! grow without bound, because a proxy that dies in the middle of a move leaves
 //! its expectations and its held players behind: every entry expires, and the
 //! table has a size cap.
+use super::hub::Hub;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -85,6 +86,64 @@ impl Expectations {
     pub fn is_empty(&self) -> bool {
         self.until.is_empty()
     }
+}
+
+/// A unique id as text, with or without dashes.
+pub fn parse_uuid(text: &str) -> Option<u128> {
+    let plain: String = text.chars().filter(|c| *c != '-').collect();
+    if plain.len() != 32 || !plain.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u128::from_str_radix(&plain, 16).ok()
+}
+
+fn error(message: &str) -> serde_json::Value {
+    serde_json::json!({ "error": message })
+}
+
+/// `player-expect <uuid> [seconds]`: the player will log in within that time
+/// (10 seconds by default, 60 at most) and is then held. The reply says whether
+/// an earlier expectation was renewed.
+pub fn expect_request(hub: &mut Hub, args: &str, now: Instant) -> serde_json::Value {
+    let mut parts = args.split_whitespace();
+    let Some(uuid) = parts.next().and_then(parse_uuid) else {
+        return error("player-expect needs the player's unique id");
+    };
+    let ttl = match parts.next() {
+        None => DEFAULT_TTL,
+        Some(seconds) => match seconds.parse::<u64>() {
+            Ok(s) if s > 0 => Duration::from_secs(s),
+            _ => return error("the time must be a number of seconds above zero"),
+        },
+    };
+    if parts.next().is_some() {
+        return error("player-expect takes a unique id and at most a time");
+    }
+    if hub.guests.iter().any(|g| g.uuid == uuid) {
+        return error("that player is already connected to this server");
+    }
+    match hub.arrivals.expect(uuid, ttl, now) {
+        Ok(renewed) => serde_json::json!({
+            "ok": true,
+            "renewed": renewed,
+            "ttl_seconds": ttl.min(MAX_TTL).as_secs(),
+        }),
+        Err(ExpectError::Full) => error("too many players are expected at once"),
+    }
+}
+
+/// `player-drop <uuid>`: forgets the expectation of that player, and
+/// disconnects it if it is already held, without a save or a word to anyone.
+pub fn drop_request(hub: &mut Hub, args: &str) -> serde_json::Value {
+    let Some(uuid) = args.split_whitespace().next().and_then(parse_uuid) else {
+        return error("player-drop needs the player's unique id");
+    };
+    let held = hub.drop_held(uuid);
+    let expected = hub.arrivals.forget(uuid);
+    if !held && !expected {
+        return error("no player with that unique id is held or expected");
+    }
+    serde_json::json!({ "ok": true, "held": held, "expected": expected })
 }
 
 /// Whether a held player that joined at tick `since` has waited too long at tick
@@ -610,5 +669,160 @@ mod hub_tests {
         assert_eq!(g.unacknowledged, 2, "its acknowledgement was handled");
         assert_eq!(g.chunks_per_tick, 12.0);
         assert_eq!(g.inbox_bytes, 0);
+    }
+
+    const UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
+    const UUID_N: u128 = 0x123e4567_e89b_12d3_a456_426614174000;
+
+    #[test]
+    fn a_unique_id_is_read_with_or_without_dashes_and_nothing_else() {
+        assert_eq!(super::parse_uuid(UUID), Some(UUID_N));
+        assert_eq!(
+            super::parse_uuid("123e4567e89b12d3a456426614174000"),
+            Some(UUID_N)
+        );
+        assert_eq!(
+            super::parse_uuid("123E4567-E89B-12D3-A456-426614174000"),
+            Some(UUID_N)
+        );
+        assert_eq!(
+            super::parse_uuid("123e4567-e89b-12d3-a456-42661417400"),
+            None
+        );
+        assert_eq!(
+            super::parse_uuid("123e4567-e89b-12d3-a456-42661417400g"),
+            None
+        );
+        assert_eq!(super::parse_uuid(""), None);
+    }
+
+    fn fresh_hub() -> Hub {
+        hub()
+    }
+
+    #[test]
+    fn player_expect_records_the_player_and_says_for_how_long() {
+        let mut hub = fresh_hub();
+        let now = Instant::now();
+        let reply = super::expect_request(&mut hub, UUID, now);
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["renewed"], false);
+        assert_eq!(reply["ttl_seconds"], 10);
+        // Asking again renews, with the time asked.
+        let reply = super::expect_request(&mut hub, &format!("{UUID} 30"), now);
+        assert_eq!(
+            (reply["renewed"].as_bool(), reply["ttl_seconds"].as_u64()),
+            (Some(true), Some(30))
+        );
+        // A time past the maximum is cut, and the reply says what it became.
+        let reply = super::expect_request(&mut hub, &format!("{UUID} 3600"), now);
+        assert_eq!(reply["ttl_seconds"], 60);
+        assert_eq!(hub.arrivals.len(), 1);
+        assert!(hub.arrivals.take(UUID_N, now));
+    }
+
+    #[test]
+    fn player_expect_refuses_what_it_cannot_do_and_changes_nothing() {
+        let mut hub = fresh_hub();
+        let now = Instant::now();
+        for args in [
+            "",
+            "not-a-uuid",
+            &format!("{UUID} 0"),
+            &format!("{UUID} soon"),
+            &format!("{UUID} 5 6"),
+        ] {
+            let reply = super::expect_request(&mut hub, args, now);
+            assert!(reply["error"].is_string(), "{args:?} gave {reply}");
+        }
+        // A player who is on the server already cannot be expected.
+        let (online, _rx) = guest(1, UUID_N, "Online");
+        hub.guests.push(online);
+        let reply = super::expect_request(&mut hub, UUID, now);
+        assert!(
+            reply["error"]
+                .as_str()
+                .unwrap()
+                .contains("already connected"),
+            "{reply}"
+        );
+        assert!(hub.arrivals.is_empty());
+    }
+
+    #[test]
+    fn player_expect_refuses_when_the_table_is_full() {
+        let mut hub = fresh_hub();
+        let now = Instant::now();
+        for n in 0..super::MAX_EXPECTED as u128 {
+            let reply = super::expect_request(&mut hub, &format!("{:032x}", 1000 + n), now);
+            assert_eq!(reply["ok"], true);
+        }
+        let reply = super::expect_request(&mut hub, UUID, now);
+        assert!(
+            reply["error"].as_str().unwrap().contains("too many"),
+            "{reply}"
+        );
+    }
+
+    /// Dropping a held player disconnects it and says nothing to the world.
+    #[test]
+    fn player_drop_removes_a_held_player_without_a_word_to_anyone() {
+        let mut hub = fresh_hub();
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        // The proxy announces the player first; then the player logs in.
+        assert_eq!(
+            super::expect_request(&mut hub, UUID, Instant::now())["ok"],
+            true
+        );
+        let (newcomer, mine) = guest(2, UUID_N, "Newcomer");
+        hub.guests.push(newcomer);
+        place(&mut hub, 2);
+        let _ = (ids(&seen), ids(&mine));
+        let reply = super::drop_request(&mut hub, UUID);
+        assert_eq!(
+            (reply["held"].as_bool(), reply["expected"].as_bool()),
+            (Some(true), Some(false))
+        );
+        assert!(matches!(mine.try_recv(), Ok(Out::Disconnect(_))));
+        // The connection closes and the hub forgets the guest.
+        let gone = hub.remove_guest(1, "dropped");
+        assert!(gone.held && !gone.placed);
+        assert_eq!(
+            ids(&seen),
+            Vec::<i32>::new(),
+            "the watcher must hear nothing"
+        );
+    }
+
+    #[test]
+    fn player_drop_forgets_an_expectation_and_refuses_a_stranger() {
+        let mut hub = fresh_hub();
+        super::expect_request(&mut hub, UUID, Instant::now());
+        let reply = super::drop_request(&mut hub, UUID);
+        assert_eq!(
+            (reply["held"].as_bool(), reply["expected"].as_bool()),
+            (Some(false), Some(true))
+        );
+        assert!(hub.arrivals.is_empty());
+        let reply = super::drop_request(&mut hub, UUID);
+        assert!(reply["error"].is_string(), "{reply}");
+        assert!(super::drop_request(&mut hub, "nonsense")["error"].is_string());
+    }
+
+    /// A placed player cannot be dropped this way: only a held one.
+    #[test]
+    fn player_drop_leaves_a_placed_player_alone() {
+        let mut hub = fresh_hub();
+        let (mut here, rx) = guest(1, UUID_N, "Here");
+        here.placed = true;
+        hub.guests.push(here);
+        let reply = super::drop_request(&mut hub, UUID);
+        assert!(reply["error"].is_string(), "{reply}");
+        assert!(
+            rx.try_recv().is_err(),
+            "a placed player must not be disconnected"
+        );
     }
 }
