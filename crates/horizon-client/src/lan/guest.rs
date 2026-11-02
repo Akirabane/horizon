@@ -344,6 +344,11 @@ pub struct Guest {
     /// Taken out of the world because a proxy moved it to another server: the game neither
     /// saves its player file nor its records, since the other server has the player now.
     pub released: bool,
+    /// A held player whose record has been applied but that is not yet let into the world
+    /// (`player-import` with `"place": false`): `player-confirm` places it, `player-drop` removes it.
+    pub imported: bool,
+    /// Whether the others are told when it is placed, as the import asked.
+    pub arrival_announce: bool,
     /// Root command names the mods took out of this player's command tree
     /// (`native_player_commands_sent`); their tree is sent without them.
     pub hidden_commands: Vec<String>,
@@ -516,6 +521,8 @@ impl Guest {
             frozen_since: None,
             quiet_leave: false,
             released: false,
+            imported: false,
+            arrival_announce: true,
             hidden_commands: Vec::new(),
             flying_speed: 0.05,
             dimension: "minecraft:overworld".into(),

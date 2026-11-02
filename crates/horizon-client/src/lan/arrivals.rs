@@ -228,6 +228,23 @@ pub fn drop_request(hub: &mut Hub, args: &str) -> serde_json::Value {
     serde_json::json!({ "ok": true, "held": held, "expected": expected })
 }
 
+/// `player-confirm <uuid>`: places the held player whose record was imported with
+/// `"place": false`, announcing it if the import asked. Until then `player-drop` removes
+/// it without a save or a word to anyone.
+pub fn confirm_request(hub: &mut Hub, args: &str) -> serde_json::Value {
+    let mut parts = args.split_whitespace();
+    let Some(uuid) = parts.next().and_then(parse_uuid) else {
+        return error("player-confirm needs the player's unique id");
+    };
+    if parts.next().is_some() {
+        return error("player-confirm takes only a unique id");
+    }
+    match hub.confirm_arrival(uuid) {
+        Ok(announced) => serde_json::json!({ "ok": true, "placed": true, "announced": announced }),
+        Err(why) => error(why),
+    }
+}
+
 /// `player-release <uuid> moved [announce]` or `player-release <uuid> abort`: ends the
 /// hand-over of a frozen player. `moved` takes it out of the world, saving nothing and, unless
 /// `announce`, without the "left the game" line; `abort` lets it go on as it was.
@@ -1464,5 +1481,162 @@ mod hub_tests {
             hub.guests[1].frozen_since.is_some(),
             "no refusal touched the player"
         );
+    }
+
+    // ---- player-import without placing, player-confirm, and the cancel ------
+
+    fn import_without_placing(
+        request_extra: serde_json::Value,
+    ) -> (Hub, Receiver<Out>, Receiver<Out>) {
+        let (record, mut hub, seen, mine) = held_in_a_second_hub();
+        let mut request = serde_json::json!({ "record": record, "place": false });
+        for (k, v) in request_extra.as_object().unwrap() {
+            request[k] = v.clone();
+        }
+        let done = import_player(&mut hub, UUID_N, &request).unwrap();
+        assert!(!done.placed);
+        (hub, seen, mine)
+    }
+
+    /// The import changes the player and tells its client, but the world still does not know it.
+    #[test]
+    fn an_import_that_does_not_place_leaves_the_player_held_and_tells_only_its_client() {
+        let (hub, seen, mine) = import_without_placing(serde_json::json!({}));
+        let g = &hub.guests[1];
+        assert!(g.held && !g.placed && g.imported && g.arrival_announce);
+        assert_eq!(
+            (g.xp_level, g.food, g.game_mode, g.position),
+            (7, 12, 1, [10.5, 70.0, -3.25])
+        );
+        assert_eq!(
+            ids(&seen),
+            Vec::<i32>::new(),
+            "the watcher must hear nothing"
+        );
+        let sent = ids(&mine);
+        for wanted in [
+            id::GAME_EVENT,
+            id::PLAYER_ABILITIES,
+            id::SET_HELD_SLOT,
+            id::PLAYER_POSITION,
+        ] {
+            assert!(
+                sent.contains(&wanted),
+                "packet {wanted} missing from {sent:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn confirming_places_the_player_and_announces_it_as_the_import_asked() {
+        let (mut hub, seen, mine) = import_without_placing(serde_json::json!({}));
+        let _ = ids(&mine);
+        let reply = super::confirm_request(&mut hub, UUID);
+        assert_eq!(
+            reply,
+            serde_json::json!({"ok": true, "placed": true, "announced": true})
+        );
+        let g = &hub.guests[1];
+        assert!(g.placed && !g.held && !g.imported);
+        let told = ids(&seen);
+        assert!(
+            told.contains(&id::SYSTEM_CHAT) && told.contains(&id::PLAYER_INFO_UPDATE),
+            "{told:?}"
+        );
+        // The confirmation is not a second import: nothing about the player is sent again.
+        assert!(!ids(&mine).contains(&id::PLAYER_POSITION));
+    }
+
+    #[test]
+    fn a_silent_import_stays_silent_when_it_is_confirmed() {
+        let (mut hub, seen, _mine) =
+            import_without_placing(serde_json::json!({ "announce": false }));
+        let reply = super::confirm_request(&mut hub, UUID);
+        assert_eq!(
+            reply,
+            serde_json::json!({"ok": true, "placed": true, "announced": false})
+        );
+        assert!(hub.guests[1].placed);
+        assert_eq!(ids(&seen), Vec::<i32>::new());
+    }
+
+    /// The cancel: a failure after the import, before anything reached the client, removes the
+    /// player from this server with no file and no word to anyone.
+    #[test]
+    fn dropping_an_imported_but_unconfirmed_player_cancels_the_arrival_without_a_word() {
+        let (mut hub, seen, mine) = import_without_placing(serde_json::json!({}));
+        let _ = ids(&mine);
+        let reply = super::drop_request(&mut hub, UUID);
+        assert_eq!(
+            (reply["held"].as_bool(), reply["expected"].as_bool()),
+            (Some(true), Some(false))
+        );
+        assert!(matches!(mine.try_recv(), Ok(Out::Disconnect(_))));
+        let gone = hub.remove_guest(1, "dropped");
+        assert!(
+            gone.held && !gone.placed && !gone.released,
+            "never placed: the game saves nothing"
+        );
+        assert_eq!(
+            ids(&seen),
+            Vec::<i32>::new(),
+            "the watcher must hear nothing"
+        );
+        // And it cannot be confirmed any more.
+        let reply = super::confirm_request(&mut hub, UUID);
+        assert!(reply["error"].is_string(), "{reply}");
+    }
+
+    #[test]
+    fn a_confirmation_is_refused_for_a_player_that_is_not_imported_and_changes_nothing() {
+        let (record, mut hub, seen, _mine) = held_in_a_second_hub();
+        let _ = record;
+        for args in ["", "nonsense", &format!("{UUID} now")] {
+            assert!(
+                super::confirm_request(&mut hub, args)["error"].is_string(),
+                "{args:?}"
+            );
+        }
+        // Held, but nothing was imported.
+        let reply = super::confirm_request(&mut hub, UUID);
+        assert!(
+            reply["error"]
+                .as_str()
+                .unwrap()
+                .contains("not been imported"),
+            "{reply}"
+        );
+        assert!(hub.guests[1].held && !hub.guests[1].placed);
+        // Not held at all.
+        let reply = super::confirm_request(&mut hub, "00000000000000000000000000000009");
+        assert!(
+            reply["error"].as_str().unwrap().contains("no player"),
+            "{reply}"
+        );
+        assert_eq!(ids(&seen), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn place_is_true_or_false() {
+        let (record, mut hub, _seen, _mine) = held_in_a_second_hub();
+        let request = serde_json::json!({ "record": record, "place": "later" });
+        assert!(import_player(&mut hub, UUID_N, &request).is_err());
+        assert!(hub.guests[1].held && !hub.guests[1].imported);
+    }
+
+    /// A proxy that dies between the import and the confirmation leaves nothing behind.
+    #[test]
+    fn an_imported_player_nobody_confirms_is_dropped_like_any_held_player() {
+        let (mut hub, seen, mine) = import_without_placing(serde_json::json!({}));
+        let _ = ids(&mine);
+        let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
+        let border = crate::worldborder::WorldBorder::default();
+        let mut next = 100;
+        let mut ctx = tick_context(&mut world, &border, &mut next);
+        hub.ticks = hub.guests[1].held_since + super::HELD_MAX_TICKS - 1;
+        let events = hub.poll(&mut ctx);
+        assert!(events.iter().any(|e| is_warn(e, "dropped")));
+        assert!(matches!(mine.try_recv(), Ok(Out::Disconnect(_))));
+        assert_eq!(ids(&seen), Vec::<i32>::new());
     }
 }

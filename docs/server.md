@@ -193,10 +193,10 @@ finished joining, is riding, is asleep or is dead.
 `player-import <uuid> <json>` applies a record to the held player, whole or in parts, and lets it into the world:
 
 ```json
-{"record": { ...the record of player-export... }, "parts": ["inventory", "experience"], "announce": true}
+{"record": { ...the record of player-export... }, "parts": ["inventory", "experience"], "announce": true, "place": true}
 ```
 
-`parts` is optional (all of them by default) and `announce` is optional (true by default). The parts, in the
+`parts` is optional (all of them by default), `announce` is optional (true by default) and `place` is optional (true by default; see below). The parts, in the
 order the reply lists them, and what each sets:
 
 | part | sets |
@@ -220,12 +220,30 @@ its `uuid` is not the request's, its compound is not valid base64 NBT, a part's 
 is not held. A record whose position is in another dimension than the held player's world is refused when
 `position` is among the parts: the client is in one dimension and only a login changes it.
 
-On success the reply is `{"ok": true, "parts": [...], "announced": true}`. The player is sent what the import
+On success the reply is `{"ok": true, "parts": [...], "placed": true, "announced": true}`. The player is sent what the import
 changed the way a join sends it (game mode, abilities, held slot, a new position to confirm, effects, inventory
 and the player list as it now is), and is placed: it is simulated, shown to the others and takes part from the
 next tick, when its first tick sends its health, experience and advancements as a new player's does. With
 `announce` true the others are told it has come, with the join line and a player-list entry; with false they
 are not told and have no list entry for it.
+
+**Importing in two steps, so that a hand-over can be cancelled.** With `"place": false` the record is applied and
+the player's client is sent everything the import changed (game mode, abilities, held slot, a position to
+confirm, effects, inventory, the player list), but the player stays *held*: not placed, not simulated, not shown,
+not announced. The reply is `{"ok": true, "parts": [...], "placed": false, "announced": <what announce asked>}`.
+Then either:
+
+- `player-confirm <uuid>` places the player as `place: true` would have, and announces it if the import's
+  `announce` said so. Reply `{"ok": true, "placed": true, "announced": true}`. It is refused, with nothing changed,
+  for a player who is not held, or who is held but whose record was not imported.
+- `player-drop <uuid>` cancels the arrival: the connection is closed and nothing is saved or said to anyone (the
+  player was never placed, so the world never knew it). Reply `{"ok": true, "held": true, "expected": false}`.
+
+A proxy that fails after a successful `player-import` with `place: false`, and before it has sent its client the
+first byte of the hand-over, calls `player-drop` and the target is as it was. A proxy that dies in between leaves
+a held player that is dropped by itself after 1,200 ticks, with a warning in the log. With `place` true (or left
+out) there is no such step: the player is placed at once, and only `player-release <uuid> moved` (after
+`player-export <uuid> freeze`) removes it.
 
 `player-release <uuid> moved [announce]` and `player-release <uuid> abort` end the hand-over of a player
 that `player-export <uuid> freeze` froze. `moved` takes the player out of the world because another server has it

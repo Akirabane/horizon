@@ -1284,19 +1284,23 @@ impl Hub {
     }
 
     /// Lets the held player at `i` into the world once its record has been applied: what the
-    /// import changed goes to its client the way a join tells it (game mode, abilities, held
-    /// slot, position, effects, inventory), the players already placed are listed to it again,
-    /// and it is placed. With `announce`, the others are told it has come, with the join line
-    /// and a player-list entry, exactly as a login would have. Its first tick then does what a
-    /// new player's does: health, experience, advancements. Nothing is done for a player who
-    /// is not held.
+    /// import changed goes to its client ([`Self::send_arrival_state`]) and it is placed
+    /// ([`Self::place_arrival`]). Nothing is done for a player who is not held.
     pub fn finish_arrival(&mut self, i: usize, announce: bool) {
         if !self.guests[i].held || self.guests[i].placed {
             return;
         }
-        let (name, uuid, mode, conn) = {
+        self.send_arrival_state(i);
+        self.place_arrival(i, announce);
+    }
+
+    /// What an import changed, told to the held player's client the way a join tells it: game
+    /// mode, abilities, held slot, a position to confirm, effects, inventory, and the player
+    /// list as it is now (who came while it was held is in it).
+    pub fn send_arrival_state(&mut self, i: usize) {
+        let (mode, conn) = {
             let g = &self.guests[i];
-            (g.name.clone(), g.uuid, g.game_mode, g.conn)
+            (g.game_mode, g.conn)
         };
         let g = &self.guests[i];
         g.send(&C::GameEvent(play::GameEvent {
@@ -1310,7 +1314,6 @@ impl Hub {
         self.resend_teleport(i, None);
         self.send_active_effects(i);
         self.send_inventory(i);
-        // The player list as it is now: who came while it was held is in it.
         let permission = self.guests[i].permission;
         let entries: Vec<_> = self
             .guests
@@ -1329,6 +1332,20 @@ impl Hub {
             actions: Self::INFO_ACTIONS,
             entries,
         }));
+    }
+
+    /// Places the held player at `i`: it is simulated, shown to the others and takes part from
+    /// the next tick, when its first tick does what a new player's does (health, experience,
+    /// advancements). With `announce`, the others are told it has come, with the join line and a
+    /// player-list entry, exactly as a login would have.
+    pub fn place_arrival(&mut self, i: usize, announce: bool) {
+        if !self.guests[i].held || self.guests[i].placed {
+            return;
+        }
+        let (name, uuid, mode, conn) = {
+            let g = &self.guests[i];
+            (g.name.clone(), g.uuid, g.game_mode, g.conn)
+        };
         if announce {
             let joined = C::SystemChat(play::SystemChat {
                 content: yellow_names("multiplayer.player.joined", vec![display_name(uuid, &name)]),
@@ -1343,6 +1360,7 @@ impl Hub {
         }
         let g = &mut self.guests[i];
         g.held = false;
+        g.imported = false;
         g.frozen_since = None;
         g.placed = true;
         g.placed_at = self.ticks;
@@ -1360,6 +1378,24 @@ impl Hub {
                 g.sender.send(newcomer.clone());
             }
         }
+    }
+
+    /// Places the held player `uuid` whose record was imported without placing it
+    /// (`player-confirm`). Returns whether the others were told it came, as the import asked.
+    pub fn confirm_arrival(&mut self, uuid: u128) -> Result<bool, &'static str> {
+        let Some(i) = self
+            .guests
+            .iter()
+            .position(|g| g.uuid == uuid && g.held && !g.placed)
+        else {
+            return Err("no player with that unique id is held");
+        };
+        if !self.guests[i].imported {
+            return Err("that player is held but its record has not been imported");
+        }
+        let announce = self.guests[i].arrival_announce;
+        self.place_arrival(i, announce);
+        Ok(announce)
     }
 
     /// `ServerPlayer.sendPostEffects`: the player's `/posteffect` chains.

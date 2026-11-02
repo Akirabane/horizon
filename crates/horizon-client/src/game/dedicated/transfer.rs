@@ -71,14 +71,33 @@ impl Game<'_> {
                     g.advancements = progress;
                     g.advancements_loaded = true;
                 }
-                if done.announce {
+                if done.placed && done.announce {
                     super::log("INFO", &format!("System chat: {name} joined the game"));
                 }
-                json!({ "ok": true, "parts": done.parts, "announced": done.announce })
+                json!({ "ok": true, "parts": done.parts, "placed": done.placed, "announced": done.announce })
             }
             Err(e) => json!({ "error": e }),
         };
         self.lan = Some(host);
+        reply
+    }
+
+    /// `player-confirm <uuid>`: places a held player whose record was imported without placing it.
+    pub(super) fn player_confirm(&mut self, args: &str) -> Value {
+        let Some(host) = self.lan.as_mut() else {
+            return json!({ "error": "the server is not open to players" });
+        };
+        let name = args
+            .split_whitespace()
+            .next()
+            .and_then(arrivals::parse_uuid)
+            .and_then(|uuid| host.hub.guests.iter().find(|g| g.uuid == uuid))
+            .map(|g| g.name.clone())
+            .unwrap_or_default();
+        let reply = arrivals::confirm_request(&mut host.hub, args);
+        if reply["announced"] == true {
+            super::log("INFO", &format!("System chat: {name} joined the game"));
+        }
         reply
     }
 

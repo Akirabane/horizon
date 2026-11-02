@@ -51,8 +51,11 @@ pub struct Imported {
     pub parts: Vec<&'static str>,
     /// The advancements to give the player, when that part was asked for.
     pub advancements: Option<Value>,
-    /// Whether the other players are told the player has arrived.
+    /// Whether the other players are told the player has arrived (when it is placed).
     pub announce: bool,
+    /// Whether the player was let into the world. When it was not (`"place": false`), it stays
+    /// held until `player-confirm` places it or `player-drop` removes it.
+    pub placed: bool,
 }
 
 /// What a request of `player-import` asks: the record, the parts (all by default)
@@ -61,6 +64,7 @@ struct Request<'a> {
     record: &'a Value,
     parts: Vec<&'static str>,
     announce: bool,
+    place: bool,
 }
 
 fn read_request(request: &Value) -> Result<Request<'_>, String> {
@@ -92,10 +96,16 @@ fn read_request(request: &Value) -> Result<Request<'_>, String> {
         Some(Value::Bool(b)) => *b,
         Some(_) => return Err("announce is true or false".into()),
     };
+    let place = match request.get("place") {
+        None | Some(Value::Null) => true,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err("place is true or false".into()),
+    };
     Ok(Request {
         record,
         parts,
         announce,
+        place,
     })
 }
 
@@ -332,7 +342,16 @@ pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Impor
     let kept = Kept::of(&hub.guests[i], &request.parts);
     playerdata::apply(&mut hub.guests[i], &level);
     kept.restore(&mut hub.guests[i], &request.parts);
-    hub.finish_arrival(i, request.announce);
+    if request.place {
+        hub.finish_arrival(i, request.announce);
+    } else {
+        // Everything the import changed reaches the client now, so that a proxy sees the
+        // player as it will be; the player stays held until it is confirmed or dropped.
+        hub.send_arrival_state(i);
+        let g = &mut hub.guests[i];
+        g.imported = true;
+        g.arrival_announce = request.announce;
+    }
     let advancements = request
         .parts
         .contains(&"advancements")
@@ -343,6 +362,7 @@ pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Impor
         parts: request.parts,
         advancements,
         announce: request.announce,
+        placed: request.place,
     })
 }
 
