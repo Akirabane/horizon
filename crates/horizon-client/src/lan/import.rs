@@ -56,6 +56,10 @@ pub struct Imported {
     /// Whether the player was let into the world. When it was not (`"place": false`), it stays
     /// held until `player-confirm` places it or `player-drop` removes it.
     pub placed: bool,
+    /// Whether the import moved the player to another chunk than the one its view was built
+    /// around. The chunk centre was sent at once, but the chunks around the new place come with
+    /// the next ticks: whoever reads the player's world must wait for them.
+    pub recentered: bool,
 }
 
 /// What a request of `player-import` asks: the record, the parts (all by default)
@@ -342,16 +346,17 @@ pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Impor
     let kept = Kept::of(&hub.guests[i], &request.parts);
     playerdata::apply(&mut hub.guests[i], &level);
     kept.restore(&mut hub.guests[i], &request.parts);
-    if request.place {
-        hub.finish_arrival(i, request.announce);
+    let recentered = if request.place {
+        hub.finish_arrival(i, request.announce)
     } else {
         // Everything the import changed reaches the client now, so that a proxy sees the
         // player as it will be; the player stays held until it is confirmed or dropped.
-        hub.send_arrival_state(i);
+        let recentered = hub.send_arrival_state(i);
         let g = &mut hub.guests[i];
         g.imported = true;
         g.arrival_announce = request.announce;
-    }
+        recentered
+    };
     let advancements = request
         .parts
         .contains(&"advancements")
@@ -363,6 +368,7 @@ pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Impor
         advancements,
         announce: request.announce,
         placed: request.place,
+        recentered,
     })
 }
 

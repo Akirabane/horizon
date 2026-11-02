@@ -118,7 +118,13 @@ impl Game<'_> {
                         super::log("INFO", &format!("System chat: {name} joined the game"));
                     }
                 }
-                json!({ "ok": true, "parts": done.parts, "placed": done.placed, "announced": done.announce })
+                json!({
+                    "ok": true,
+                    "parts": done.parts,
+                    "placed": done.placed,
+                    "announced": done.announce,
+                    "recentered": done.recentered,
+                })
             }
             Err(e) => json!({ "error": e }),
         };

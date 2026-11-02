@@ -1858,4 +1858,101 @@ mod hub_tests {
             );
         }
     }
+
+    // ---- the view follows the imported position ------------------------------
+
+    /// A held player whose view is centred on chunk (0, 0) (`center`), and a record of a player
+    /// standing at `at`.
+    fn held_with_a_record_at(
+        at: [f64; 3],
+        center: Option<(i32, i32)>,
+    ) -> (serde_json::Value, Hub, Receiver<Out>) {
+        let (mut source, i) = exported_guest();
+        source.guests[i].position = at;
+        let record = super::export_record(&mut source, i, false, serde_json::Value::Null).unwrap();
+        let mut hub = hub();
+        assert_eq!(
+            super::expect_request(&mut hub, UUID, Instant::now())["ok"],
+            true
+        );
+        let (newcomer, mine) = guest(2, UUID_N, "Alex");
+        hub.guests.push(newcomer);
+        place(&mut hub, 2);
+        hub.guests[0].center = center;
+        let _ = ids(&mine);
+        (record, hub, mine)
+    }
+
+    #[test]
+    fn an_import_to_another_chunk_moves_the_view_at_once_and_says_so() {
+        // Chunk (0, 0) before, chunk (6, -1) after: x 100.5 is block 100, chunk 6; z -3.25 is chunk -1.
+        let (record, mut hub, mine) = held_with_a_record_at([100.5, 70.0, -3.25], Some((0, 0)));
+        let request = serde_json::json!({ "record": record, "place": false });
+        let done = import_player(&mut hub, UUID_N, &request).unwrap();
+        assert!(done.recentered);
+        assert_eq!(
+            hub.guests[0].center,
+            Some((6, -1)),
+            "the view is centred on the new chunk"
+        );
+        let sent = packets(&mine);
+        let centre = sent
+            .iter()
+            .position(|(i, _)| *i == id::SET_CHUNK_CACHE_CENTER)
+            .expect("the new chunk centre is sent with the import");
+        let position = sent
+            .iter()
+            .position(|(i, _)| *i == id::PLAYER_POSITION)
+            .unwrap();
+        assert!(
+            centre < position,
+            "the centre goes before the position the client confirms"
+        );
+        // The centre is the vanilla pair of VarInts: chunk x then chunk z (6, then -1 as an unsigned VarInt).
+        let mut r = horizon_protocol::buf::Reader::new(&sent[centre].1);
+        assert_eq!((r.varint().unwrap(), r.varint().unwrap()), (6, -1));
+    }
+
+    #[test]
+    fn an_import_inside_the_same_chunk_does_not_recentre() {
+        let (record, mut hub, mine) = held_with_a_record_at([3.5, 64.0, 3.5], Some((0, 0)));
+        let request = serde_json::json!({ "record": record, "place": false });
+        let done = import_player(&mut hub, UUID_N, &request).unwrap();
+        assert!(!done.recentered);
+        assert_eq!(hub.guests[0].center, Some((0, 0)));
+        assert!(!ids(&mine).contains(&id::SET_CHUNK_CACHE_CENTER));
+    }
+
+    #[test]
+    fn without_the_position_part_the_view_stays_where_it_is() {
+        let (record, mut hub, mine) = held_with_a_record_at([100.5, 70.0, -3.25], Some((0, 0)));
+        let request =
+            serde_json::json!({ "record": record, "place": false, "parts": ["inventory"] });
+        let done = import_player(&mut hub, UUID_N, &request).unwrap();
+        assert!(!done.recentered);
+        assert_eq!(hub.guests[0].center, Some((0, 0)));
+        assert!(!ids(&mine).contains(&id::SET_CHUNK_CACHE_CENTER));
+    }
+
+    /// A held player that has not been sent any chunk has no view to move: the first tick builds it
+    /// around the new place.
+    #[test]
+    fn a_view_not_yet_built_is_not_recentred() {
+        let (record, mut hub, _mine) = held_with_a_record_at([100.5, 70.0, -3.25], None);
+        let request = serde_json::json!({ "record": record, "place": false });
+        assert!(
+            !import_player(&mut hub, UUID_N, &request)
+                .unwrap()
+                .recentered
+        );
+    }
+
+    #[test]
+    fn placing_at_once_reports_the_recentring_too() {
+        let (record, mut hub, mine) = held_with_a_record_at([100.5, 70.0, -3.25], Some((0, 0)));
+        let done =
+            import_player(&mut hub, UUID_N, &serde_json::json!({ "record": record })).unwrap();
+        assert!(done.placed && done.recentered);
+        assert!(ids(&mine).contains(&id::SET_CHUNK_CACHE_CENTER));
+    }
 }

@@ -220,12 +220,22 @@ its `uuid` is not the request's, its compound is not valid base64 NBT, a part's 
 is not held. A record whose position is in another dimension than the held player's world is refused when
 `position` is among the parts: the client is in one dimension and only a login changes it.
 
-On success the reply is `{"ok": true, "parts": [...], "placed": true, "announced": true}`. The player is sent what the import
+On success the reply is `{"ok": true, "parts": [...], "placed": true, "announced": true, "recentered": false}`. The player is sent what the import
 changed the way a join sends it (game mode, abilities, held slot, a new position to confirm, effects, inventory
 and the player list as it now is), and is placed: it is simulated, shown to the others and takes part from the
 next tick, when its first tick sends its health, experience and advancements as a new player's does. With
 `announce` true the others are told it has come, with the join line and a player-list entry; with false they
 are not told and have no list entry for it.
+
+**The view follows the imported position.** `recentered` says whether the import moved the player to another
+chunk than the one its view was built around (only possible with the `position` part, and only once the player
+has been sent chunks). When it did, the server moves the view at once, before the position the client confirms:
+it sends `SetChunkCacheCenter` for the new chunk and forgets the chunks that are out of reach, as the next tick
+would have. The chunks around the new place are **not** sent yet: they come one batch at a time with the next
+ticks, and the client acknowledges each batch. Whoever reads the player's world (a proxy building a view of it)
+must therefore wait for new chunk batches after a reply with `"recentered": true`, as it waited for the first
+ones; with `false` the chunks it already has are the ones around the player. An import without the `position`
+part never recentres.
 
 **Importing in two steps, so that a hand-over can be cancelled.** With `"place": false` the record is applied and
 the player's client is sent everything the import changed (game mode, abilities, held slot, a position to
