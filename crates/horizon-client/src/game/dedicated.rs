@@ -1240,12 +1240,13 @@ impl Game<'_> {
     /// ticket), an integrated one the spawn chunk's.
     pub(super) fn update_dedicated_streaming(&mut self) {
         let rule = self.ui.rules.bool("spectators_generate_chunks");
+        // A held player (arriving from another server) is sent the level too, so it holds
+        // the world loaded around it as a placed player does.
         let guest = self.lan.as_ref().and_then(|h| {
             h.hub
-                .guests
-                .iter()
-                .find(|g| h.hub.here(g) && super::game_mode::loads_chunks(rule, g.spectator()))
-                .map(|g| g.chunk())
+                .loading_chunks(|g| super::game_mode::loads_chunks(rule, g.spectator()))
+                .first()
+                .copied()
         });
         if self.standalone_server() {
             self.streaming.radius = if guest.is_some() {

@@ -768,6 +768,17 @@ impl Hub {
     pub fn watches(&self, g: &Guest) -> bool {
         (g.placed || g.held) && g.dimension == self.config.dimension
     }
+    /// The chunk under each player the level in place has to keep loaded: the players placed in
+    /// it and the held ones, which are sent its chunks too ([`Self::watches`]), whose `loads`
+    /// says so (a spectator may not load chunks). A server with only a held player must load
+    /// and generate the world around it, or the player waits for ever for its world.
+    pub fn loading_chunks(&self, loads: impl Fn(&Guest) -> bool) -> Vec<(i32, i32)> {
+        self.guests
+            .iter()
+            .filter(|g| self.watches(g) && loads(g))
+            .map(Guest::chunk)
+            .collect()
+    }
     /// `PlayerList.broadcastAll(packet, dimension)`: the players in the
     /// level in place.
     pub fn broadcast_level(&self, packet: &C) {
@@ -1166,7 +1177,6 @@ impl Hub {
             let g = &mut self.guests[i];
             g.held = true;
             g.held_since = self.ticks;
-            log::info!("[lan] {name} is held: it arrives from another server");
         }
         let g = &self.guests[i];
         g.send(&C::Login(play::Login {
@@ -2077,6 +2087,16 @@ impl Hub {
                     uuid: g.uuid,
                     window: m.window,
                 });
+        }
+        // A held player a proxy dropped keeps, in the log, how its connection really ended
+        // (an unreadable packet, a reset): the drop says only that it was dropped.
+        if g.held
+            && !g.placed
+            && !reason.is_empty()
+            && !g.left_reason.is_empty()
+            && g.left_reason != reason
+        {
+            g.left_reason = format!("{} (the connection ended: {reason})", g.left_reason);
         }
         if g.left_reason.is_empty() {
             g.left_reason = reason.to_owned();

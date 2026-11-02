@@ -2024,4 +2024,70 @@ mod hub_tests {
         assert!(!hub.guests[1].freeze_expired);
         assert!(super::release_request(&mut hub, &format!("{UUID} moved"))["error"].is_string());
     }
+
+    // ---- the world is loaded for a held player; how a held player's connection ended --
+
+    #[test]
+    fn the_world_is_loaded_around_the_players_placed_and_the_held_ones_only() {
+        let mut hub = hub();
+        let overworld = |mut g: Guest, at: [f64; 3]| {
+            g.position = at;
+            g
+        };
+        // Placed in the level in place.
+        let (mut placed, _a) = guest(1, 1, "Placed");
+        placed.placed = true;
+        hub.guests.push(overworld(placed, [8.0, 64.0, 8.0]));
+        // Held: sent the level too, so the level must be loaded around it.
+        let (mut held, _b) = guest(2, 2, "Held");
+        held.held = true;
+        hub.guests.push(overworld(held, [100.5, 64.0, -3.0]));
+        // Neither (still logging in): nothing to load for it.
+        let (idle, _c) = guest(3, 3, "Idle");
+        hub.guests.push(overworld(idle, [500.0, 64.0, 500.0]));
+        // Placed in another level.
+        let (mut elsewhere, _d) = guest(4, 4, "Elsewhere");
+        elsewhere.placed = true;
+        elsewhere.dimension = "minecraft:the_nether".into();
+        hub.guests.push(overworld(elsewhere, [900.0, 64.0, 900.0]));
+        assert_eq!(hub.loading_chunks(|_| true), vec![(0, 0), (6, -1)]);
+        // The caller can leave a player out (a spectator that may not load chunks).
+        assert_eq!(hub.loading_chunks(|g| g.name != "Held"), vec![(0, 0)]);
+    }
+
+    #[test]
+    fn a_dropped_held_player_keeps_how_its_connection_really_ended() {
+        let mut hub = hub();
+        let (mut held, _rx) = guest(2, UUID_N, "Held");
+        held.held = true;
+        hub.guests.push(held);
+        assert!(super::drop_request(&mut hub, UUID)["ok"] == true);
+        let gone = hub.remove_guest(0, "Invalid packet 0: unexpected end of data");
+        assert_eq!(
+            gone.left_reason,
+            "dropped before its hand-over (the connection ended: Invalid packet 0: unexpected end of data)"
+        );
+    }
+
+    #[test]
+    fn a_held_player_whose_connection_ends_by_itself_logs_the_real_reason() {
+        let mut hub = hub();
+        let (mut held, _rx) = guest(2, UUID_N, "Held");
+        held.held = true;
+        hub.guests.push(held);
+        let gone = hub.remove_guest(0, "Invalid packet 0: unexpected end of data");
+        assert_eq!(gone.left_reason, "Invalid packet 0: unexpected end of data");
+    }
+
+    /// The control: a placed player keeps the reason it was kicked with, as vanilla logs it.
+    #[test]
+    fn a_placed_player_keeps_the_reason_it_was_kicked_with() {
+        let mut hub = hub();
+        let (mut placed, _rx) = guest(2, UUID_N, "Placed");
+        placed.placed = true;
+        placed.left_reason = "Timed out".into();
+        hub.guests.push(placed);
+        let gone = hub.remove_guest(0, "Disconnected");
+        assert_eq!(gone.left_reason, "Timed out");
+    }
 }

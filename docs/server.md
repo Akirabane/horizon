@@ -150,7 +150,9 @@ at most 64 players are expected at once). The next login of that player is then 
 the whole join sequence and the level around it (chunks, block and light changes, entities, the level's
 broadcasts), and answers the server's requests (teleport, chunk batch, loaded, keep-alive), but it is not
 placed: no join message, no player-list entry for the others, not among the entities they are shown, not
-simulated, and nothing else it sends is acted on. `player-drop <uuid>` forgets the expectation, and
+simulated, and nothing else it sends is acted on. The world is kept loaded, and generated if need be, around a held
+player exactly as around a placed one, so a server with nobody else on it (paused or not) sends a held player its
+chunks as soon as it has them; a server that has been paused wakes up with the held login. `player-drop <uuid>` forgets the expectation, and
 disconnects the held player without a save or a word to anyone. A player who never comes is reported in
 the log when the expectation runs out, and a held player nobody takes over is dropped after a minute.
 The requests are `lan/arrivals.rs`'s; the answers are one JSON line, `{"ok": true, ...}` or
