@@ -1090,6 +1090,16 @@ impl Hub {
             let g = &self.guests[i];
             (g.name.clone(), g.uuid, g.entity_id, g.game_mode)
         };
+        // A player a proxy said would arrive is held: it gets the whole join
+        // sequence, so it can build its picture of the world, but no one else is
+        // told about it (see `arrivals`).
+        let held = self.arrivals.take(uuid, std::time::Instant::now());
+        if held {
+            let g = &mut self.guests[i];
+            g.held = true;
+            g.held_since = self.ticks;
+            log::info!("[lan] {name} is held: it arrives from another server");
+        }
         let g = &self.guests[i];
         g.send(&C::Login(play::Login {
             player_id: entity_id,
@@ -1126,21 +1136,23 @@ impl Hub {
         self.send_initial_recipe_book(i);
         // PlayerList.placeNewPlayer broadcasts the join line before
         // players.add: the others read it, the newcomer doesn't (nor those
-        // a native mod hides it from).
-        let joined = C::SystemChat(play::SystemChat {
-            content: yellow_names(
-                "multiplayer.player.joined",
-                vec![display_name(self.guests[i].uuid, &name)],
-            ),
-            overlay: false,
-        })
-        .encode();
-        for g in self.guests.iter().filter(|g| g.placed && g.conn != conn) {
-            if self.sees(g.permission, uuid) {
-                g.sender.send(joined.clone());
+        // a native mod hides it from). A held player is not announced.
+        if !held {
+            let joined = C::SystemChat(play::SystemChat {
+                content: yellow_names(
+                    "multiplayer.player.joined",
+                    vec![display_name(self.guests[i].uuid, &name)],
+                ),
+                overlay: false,
+            })
+            .encode();
+            for g in self.guests.iter().filter(|g| g.placed && g.conn != conn) {
+                if self.sees(g.permission, uuid) {
+                    g.sender.send(joined.clone());
+                }
             }
+            self.guests[i].placed = true;
         }
-        self.guests[i].placed = true;
         self.resend_teleport(i, None);
         let g = &self.guests[i];
         g.send(&C::ServerData(play::ServerData {
@@ -1175,12 +1187,17 @@ impl Hub {
             entries: vec![self.player_info(uuid, &name, mode, 0)],
         })
         .encode();
-        let level = self.hidden.get(&uuid).copied();
-        for g in self.guests.iter_mut().filter(|g| g.placed) {
-            if level.is_some_and(|l| g.permission < l) {
-                g.tab_hidden.insert(uuid);
-            } else {
-                g.sender.send(newcomer.clone());
+        if held {
+            // Its own list has itself in it; the others' lists do not.
+            self.guests[i].sender.send(newcomer);
+        } else {
+            let level = self.hidden.get(&uuid).copied();
+            for g in self.guests.iter_mut().filter(|g| g.placed) {
+                if level.is_some_and(|l| g.permission < l) {
+                    g.tab_hidden.insert(uuid);
+                } else {
+                    g.sender.send(newcomer.clone());
+                }
             }
         }
         self.send_level_info(i, ctx, true);

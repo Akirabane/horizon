@@ -193,3 +193,179 @@ mod tests {
         assert!(!held_too_long(500, 100));
     }
 }
+
+/// The hub's side: what the other players are told when a player arrives.
+#[cfg(test)]
+mod hub_tests {
+    use crate::lan::{
+        Joined, Lan, NetConfig, Out, PlayerSender,
+        chunks::ChunkEncoder,
+        data,
+        guest::Guest,
+        hub::{Hub, HubConfig, TickCtx},
+    };
+    use horizon_protocol::ids::play::clientbound as id;
+    use std::sync::mpsc::{Receiver, channel};
+    use std::time::{Duration, Instant};
+
+    fn hub() -> Hub {
+        let config = NetConfig {
+            announce: false,
+            ..NetConfig::lan(0, "ArrivalsTest".into(), 4)
+        };
+        let sync = std::sync::Arc::new(data::SyncData::empty());
+        let lan = Lan::start_with(sync.clone(), config).unwrap();
+        let encoder = ChunkEncoder::new(
+            [] as [(std::sync::Arc<str>, bool); 0],
+            &horizon_protocol::registry::Builtin::default(),
+            &[],
+            &[],
+        );
+        let config = HubConfig {
+            default_game_mode: 0,
+            guest_commands: false,
+            force_game_mode: false,
+            hardcore: false,
+            view_distance: 4,
+            simulation_distance: 4,
+            dimension: "minecraft:overworld".into(),
+            allow_flight: false,
+            seed: 0,
+            max_players: 4,
+            integrated: false,
+            levels: Default::default(),
+        };
+        Hub::new(lan, sync, encoder, config)
+    }
+
+    /// A guest in the overworld and the end of the channel its packets go to.
+    fn guest(conn: u32, uuid: u128, name: &str) -> (Guest, Receiver<Out>) {
+        let (tx, rx) = channel();
+        let mut g = Guest::new(
+            Joined {
+                conn,
+                uuid,
+                name: name.into(),
+                properties: Vec::new(),
+                info: horizon_protocol::packets::configuration::ClientInformation::new(4),
+                brand: "vanilla".into(),
+                sender: PlayerSender::new(tx, std::sync::Arc::default()),
+                latency: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+            },
+            conn as i32,
+            [0.5, 64.0, 0.5],
+            4,
+        );
+        g.dimension = "minecraft:overworld".into();
+        (g, rx)
+    }
+
+    /// The ids of the packets waiting in a channel, in order.
+    fn ids(rx: &Receiver<Out>) -> Vec<i32> {
+        let mut out = Vec::new();
+        let mut one = |body: &[u8]| {
+            out.push(horizon_protocol::buf::Reader::new(body).varint().unwrap());
+        };
+        while let Ok(o) = rx.try_recv() {
+            match o {
+                Out::Packet(b) => one(&b),
+                Out::Packets(bs) => bs.iter().for_each(|b| one(b)),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn place(hub: &mut Hub, conn: u32) {
+        let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
+        let border = crate::worldborder::WorldBorder::default();
+        let mut next = 100;
+        let mut ctx = TickCtx {
+            world: &mut world,
+            entities: &[],
+            next_entity: &mut next,
+            spawn: [0.5, 64.0, 0.5],
+            difficulty: 2,
+            difficulty_locked: false,
+            clock_rate: 1.0,
+            tick_rate: 20.0,
+            tick_frozen: false,
+            tick_steps: Default::default(),
+            collision: None,
+            border: &border,
+            streaming: None,
+        };
+        hub.place_new_player(conn, &mut ctx);
+    }
+
+    /// The control: a player nobody expected is announced as always, to the
+    /// others by a chat line and a player-list entry.
+    #[test]
+    fn an_ordinary_login_is_announced_to_the_others() {
+        let mut hub = hub();
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        let (newcomer, mine) = guest(2, 2, "Newcomer");
+        hub.guests.push(newcomer);
+        place(&mut hub, 2);
+        let told = ids(&seen);
+        assert!(told.contains(&id::SYSTEM_CHAT), "{told:?}");
+        assert!(told.contains(&id::PLAYER_INFO_UPDATE), "{told:?}");
+        assert!(hub.guests[1].placed && !hub.guests[1].held);
+        assert_eq!(ids(&mine)[0], id::LOGIN);
+    }
+
+    /// A player the proxy announced is held: it gets the whole join sequence,
+    /// and the player already there is told nothing at all.
+    #[test]
+    fn an_expected_player_is_held_and_no_one_else_hears_of_it() {
+        let mut hub = hub();
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        let (newcomer, mine) = guest(2, 2, "Newcomer");
+        hub.guests.push(newcomer);
+        hub.arrivals
+            .expect(2, Duration::from_secs(10), Instant::now())
+            .unwrap();
+        place(&mut hub, 2);
+        assert_eq!(
+            ids(&seen),
+            Vec::<i32>::new(),
+            "the watcher must hear nothing"
+        );
+        let g = &hub.guests[1];
+        assert!(g.held && !g.placed);
+        assert!(hub.arrivals.is_empty(), "the login used up the expectation");
+        let sent = ids(&mine);
+        assert_eq!(sent[0], id::LOGIN);
+        for wanted in [id::PLAYER_INFO_UPDATE, id::SET_CHUNK_CACHE_CENTER] {
+            assert!(
+                sent.contains(&wanted),
+                "packet {wanted} missing from {sent:?}"
+            );
+        }
+        // The held player is in its own list but did not announce itself.
+        assert!(!sent.contains(&id::SYSTEM_CHAT), "{sent:?}");
+    }
+
+    /// An expectation is for one player: another uuid logs in as usual.
+    #[test]
+    fn the_expectation_of_one_player_does_not_hold_another() {
+        let mut hub = hub();
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        let (newcomer, _mine) = guest(2, 2, "Newcomer");
+        hub.guests.push(newcomer);
+        hub.arrivals
+            .expect(3, Duration::from_secs(10), Instant::now())
+            .unwrap();
+        place(&mut hub, 2);
+        assert!(hub.guests[1].placed && !hub.guests[1].held);
+        assert!(ids(&seen).contains(&id::SYSTEM_CHAT));
+        assert_eq!(hub.arrivals.len(), 1, "the other player is still expected");
+    }
+}
