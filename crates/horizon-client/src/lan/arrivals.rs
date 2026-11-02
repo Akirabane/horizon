@@ -2168,4 +2168,146 @@ mod hub_tests {
             "the record's stone must not come"
         );
     }
+
+    // ---- where the player arrives: the request's own position, rotation, velocity -----
+
+    /// The position a PlayerPosition packet carries, with its look.
+    fn position_sent(mine: &Receiver<Out>) -> ([f64; 3], f32, f32) {
+        let (id_, payload) = packets(mine)
+            .into_iter()
+            .rev()
+            .find(|(i, _)| *i == id::PLAYER_POSITION)
+            .expect("the import sends a position");
+        match horizon_protocol::packets::play::Clientbound::decode(id_, &payload).unwrap() {
+            horizon_protocol::packets::play::Clientbound::PlayerPosition(p) => {
+                (p.position, p.yaw, p.pitch)
+            }
+            other => panic!("not a position: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_requests_position_wins_over_the_records_and_the_client_is_told_it() {
+        let (record, mut hub, mine) = held_with_a_record_at([10.5, 70.0, -3.25], Some((0, 0)));
+        let request = serde_json::json!({
+            "record": record, "place": false,
+            "position": [300.5, 64.0, 300.5], "rotation": [90.0, 20.0],
+            "velocity": [0.25, -0.5, 0.0], "on_ground": false,
+        });
+        let done = import_player(&mut hub, UUID_N, &request).unwrap();
+        let g = &hub.guests[0];
+        assert_eq!(g.position, [300.5, 64.0, 300.5]);
+        assert_eq!(g.previous_position, [300.5, 64.0, 300.5]);
+        assert_eq!((g.yaw, g.pitch, g.head_yaw), (90.0, 20.0, 90.0));
+        assert!(!g.on_ground);
+        assert_eq!(g.loaded_body.unwrap().velocity, [0.25, -0.5, 0.0]);
+        // The chunk is the one of the request's position, not the record's.
+        assert!(done.recentered);
+        assert_eq!(g.center, Some((18, 18)));
+        let (at, yaw, pitch) = position_sent(&mine);
+        assert_eq!((at, yaw, pitch), ([300.5, 64.0, 300.5], 90.0, 20.0));
+    }
+
+    #[test]
+    fn without_the_requests_fields_the_records_place_is_taken() {
+        let (record, mut hub, mine) = held_with_a_record_at([10.5, 70.0, -3.25], Some((0, 0)));
+        import_player(
+            &mut hub,
+            UUID_N,
+            &serde_json::json!({ "record": record, "place": false }),
+        )
+        .unwrap();
+        assert_eq!(hub.guests[0].position, [10.5, 70.0, -3.25]);
+        assert_eq!(position_sent(&mine).0, [10.5, 70.0, -3.25]);
+    }
+
+    #[test]
+    fn a_pitch_past_a_quarter_turn_is_cut_to_it() {
+        let (record, mut hub, _mine) = held_with_a_record_at([10.5, 70.0, -3.25], None);
+        let request =
+            serde_json::json!({ "record": record, "place": false, "rotation": [10.0, 120.0] });
+        import_player(&mut hub, UUID_N, &request).unwrap();
+        assert_eq!((hub.guests[0].yaw, hub.guests[0].pitch), (10.0, 90.0));
+    }
+
+    /// Every refusal leaves the held player as it was and tells its client nothing.
+    #[test]
+    fn a_place_that_is_not_one_is_refused_and_nothing_changes() {
+        let (record, mut hub, mine) = held_with_a_record_at([10.5, 70.0, -3.25], Some((0, 0)));
+        let before = crate::lan::playerdata::compound(&hub.guests[0]);
+        let place = hub.guests[0].position;
+        let with = |extra: serde_json::Value| {
+            let mut r = serde_json::json!({ "record": record.clone(), "place": false });
+            for (k, v) in extra.as_object().unwrap() {
+                r[k] = v.clone();
+            }
+            r
+        };
+        let cases = [
+            (
+                "beyond the world",
+                with(serde_json::json!({ "position": [40_000_000.0, 64.0, 0.0] })),
+            ),
+            (
+                "far below",
+                with(serde_json::json!({ "position": [0.0, -40_000_000.0, 0.0] })),
+            ),
+            (
+                "two numbers",
+                with(serde_json::json!({ "position": [1.0, 2.0] })),
+            ),
+            (
+                "a string",
+                with(serde_json::json!({ "position": ["a", "b", "c"] })),
+            ),
+            ("not a list", with(serde_json::json!({ "position": 5 }))),
+            (
+                "rotation of one",
+                with(serde_json::json!({ "rotation": [1.0] })),
+            ),
+            (
+                "a velocity of a hundred and one",
+                with(serde_json::json!({ "velocity": [101.0, 0.0, 0.0] })),
+            ),
+            (
+                "on_ground a number",
+                with(serde_json::json!({ "on_ground": 1 })),
+            ),
+            (
+                "the position part left out",
+                with(serde_json::json!({ "position": [1.0, 64.0, 1.0], "parts": ["inventory"] })),
+            ),
+        ];
+        for (what, request) in &cases {
+            let error = import_player(&mut hub, UUID_N, request).expect_err(what);
+            assert!(!error.is_empty(), "{what}");
+            let g = &hub.guests[0];
+            assert!(
+                g.held && !g.imported,
+                "{what}: the player must still be held and not imported"
+            );
+            assert_eq!(g.position, place, "{what}");
+            assert_eq!(
+                crate::lan::playerdata::compound(g),
+                before,
+                "{what}: nothing may change"
+            );
+        }
+        assert_eq!(
+            ids(&mine),
+            Vec::<i32>::new(),
+            "a refusal tells the client nothing"
+        );
+    }
+
+    #[test]
+    fn a_position_is_finite_and_inside_the_worlds_limit() {
+        use crate::lan::import::check_position_for_tests as check;
+        assert!(check([0.0, 64.0, 0.0]));
+        assert!(check([-30_000_000.0, -64.0, 30_000_000.0]));
+        assert!(!check([30_000_000.5, 64.0, 0.0]));
+        assert!(!check([f64::NAN, 64.0, 0.0]));
+        assert!(!check([0.0, f64::INFINITY, 0.0]));
+        assert!(!check([0.0, 64.0, f64::NEG_INFINITY]));
+    }
 }

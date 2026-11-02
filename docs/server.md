@@ -229,6 +229,25 @@ next tick, when its first tick sends its health, experience and advancements as 
 `announce` true the others are told it has come, with the join line and a player-list entry; with false they
 are not told and have no list entry for it.
 
+**Where the player arrives.** Only the compound of the record is read: the fields above it (`position`, `rotation`,
+`velocity`, `dimension`) are for whoever reads the record and changing them changes nothing. To put the player
+somewhere other than the record says (a proxy that knows where its client stands, which the frozen source may not
+have seen yet), the request itself takes four optional fields, which win over the compound:
+
+```json
+{"record": {...}, "position": [300.5, 64.0, 300.5], "rotation": [90.0, 20.0], "velocity": [0.0, -0.1, 0.0], "on_ground": false}
+```
+
+`position` is `[x, y, z]`, `rotation` is `[yaw, pitch]` in degrees (a pitch past ±90 is cut to it), `velocity` is
+`[x, y, z]` in blocks a tick (at most 100 in each), `on_ground` is a boolean. They belong to the `position` part: a
+request that gives one and does not import that part is refused. A position that is not finite, or beyond 30,000,000
+blocks from the origin in any coordinate, is refused, and so is a rotation or a velocity that is not finite numbers,
+a list of the wrong length, and a record whose own position or rotation is like that (when the position part is
+imported); nothing changes in any of these cases. The border, the blocks and the chunks are not checked, as a vanilla
+server does not check the place its player file names: a player put in a wall or outside the border is a matter for the
+game, not for the import. The player is teleported to the position (the client confirms a new teleport id), so an
+anticheat never sees the arrival as a move, however far it is from the export.
+
 **The view follows the imported position.** `recentered` says whether the import moved the player to another
 chunk than the one its view was built around (only possible with the `position` part, and only once the player
 has been sent chunks). When it did, the server moves the view at once, before the position the client confirms:

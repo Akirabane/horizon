@@ -69,6 +69,103 @@ struct Request<'a> {
     parts: Vec<&'static str>,
     announce: bool,
     place: bool,
+    arrival: Arrival,
+}
+
+/// The farthest a coordinate may be from the origin: the world's limit in vanilla.
+const MAX_COORDINATE: f64 = 30_000_000.0;
+/// The fastest a velocity component may be, in blocks a tick (a player falls at about 3.9).
+const MAX_VELOCITY: f64 = 100.0;
+
+/// Where the player stands when it arrives, when the request says so instead of the record:
+/// what a proxy knows of its client, which the frozen source may not have seen yet.
+#[derive(Default, Debug, PartialEq)]
+struct Arrival {
+    position: Option<[f64; 3]>,
+    /// Yaw and pitch, in degrees.
+    rotation: Option<[f32; 2]>,
+    velocity: Option<[f64; 3]>,
+    on_ground: Option<bool>,
+}
+
+impl Arrival {
+    fn is_empty(&self) -> bool {
+        *self == Arrival::default()
+    }
+}
+
+/// A position the server will put a player at: finite and inside the world's limit. Nothing
+/// is asked of the border, the blocks or the chunks, as a vanilla server asks nothing of the
+/// place a player's file names.
+fn check_position(p: [f64; 3]) -> Result<[f64; 3], String> {
+    if p.iter().all(|c| c.is_finite() && c.abs() <= MAX_COORDINATE) {
+        Ok(p)
+    } else {
+        Err(format!(
+            "{p:?} is not a position: every coordinate must be a number within {MAX_COORDINATE}"
+        ))
+    }
+}
+
+/// For the tests of the hub: whether a position is one the server will take.
+#[cfg(test)]
+pub fn check_position_for_tests(p: [f64; 3]) -> bool {
+    check_position(p).is_ok()
+}
+
+/// `N` numbers out of a JSON list.
+fn numbers<const N: usize>(value: &Value, what: &str) -> Result<[f64; N], String> {
+    let list = value
+        .as_array()
+        .filter(|l| l.len() == N)
+        .ok_or_else(|| format!("{what} is a list of {N} numbers"))?;
+    let mut out = [0.0; N];
+    for (slot, v) in out.iter_mut().zip(list) {
+        *slot = v
+            .as_f64()
+            .filter(|n| n.is_finite())
+            .ok_or_else(|| format!("{what} holds only finite numbers"))?;
+    }
+    Ok(out)
+}
+
+fn read_arrival(request: &Value) -> Result<Arrival, String> {
+    let given = |key: &str| request.get(key).filter(|v| !v.is_null());
+    let position = match given("position") {
+        Some(v) => Some(check_position(numbers::<3>(v, "position")?)?),
+        None => None,
+    };
+    let rotation = match given("rotation") {
+        Some(v) => {
+            let [yaw, pitch] = numbers::<2>(v, "rotation")?;
+            // A client's pitch is cut to a quarter turn each way, as vanilla cuts it.
+            Some([yaw as f32, pitch.clamp(-90.0, 90.0) as f32])
+        }
+        None => None,
+    };
+    let velocity = match given("velocity") {
+        Some(v) => {
+            let v = numbers::<3>(v, "velocity")?;
+            if v.iter().any(|c| c.abs() > MAX_VELOCITY) {
+                return Err(format!(
+                    "{v:?} is not a velocity: at most {MAX_VELOCITY} blocks a tick"
+                ));
+            }
+            Some(v)
+        }
+        None => None,
+    };
+    let on_ground = match given("on_ground") {
+        None => None,
+        Some(Value::Bool(b)) => Some(*b),
+        Some(_) => return Err("on_ground is true or false".into()),
+    };
+    Ok(Arrival {
+        position,
+        rotation,
+        velocity,
+        on_ground,
+    })
 }
 
 fn read_request(request: &Value) -> Result<Request<'_>, String> {
@@ -105,11 +202,19 @@ fn read_request(request: &Value) -> Result<Request<'_>, String> {
         Some(Value::Bool(b)) => *b,
         Some(_) => return Err("place is true or false".into()),
     };
+    let arrival = read_arrival(request)?;
+    if !arrival.is_empty() && !parts.contains(&"position") {
+        return Err(
+            "position, rotation, velocity and on_ground belong to the position part, which is not imported"
+                .into(),
+        );
+    }
     Ok(Request {
         record,
         parts,
         announce,
         place,
+        arrival,
     })
 }
 
@@ -332,6 +437,18 @@ pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Impor
     };
     let mut level = Level::default();
     level.read_player(&tag);
+    // The record's own place is checked when it is the one taken: a position that is not a
+    // position would be applied as it stands.
+    if request.parts.contains(&"position") {
+        if request.arrival.position.is_none()
+            && let Some(p) = level.position
+        {
+            check_position(p).map_err(|e| format!("the record's position: {e}"))?;
+        }
+        if request.arrival.rotation.is_none() && !level.rotation.iter().all(|r| r.is_finite()) {
+            return Err("the record's rotation is not a rotation".into());
+        }
+    }
     // A position in another dimension than the client's cannot be taken: the client
     // would have to change its world, and only a login does that.
     if request.parts.contains(&"position") {
@@ -361,6 +478,28 @@ pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Impor
     }
     playerdata::apply(&mut hub.guests[i], &level);
     kept.restore(&mut hub.guests[i], &request.parts);
+    // What the request says of where the player stands wins over the record.
+    {
+        let g = &mut hub.guests[i];
+        let a = &request.arrival;
+        if let Some(p) = a.position {
+            g.position = p;
+            g.previous_position = p;
+        }
+        if let Some([yaw, pitch]) = a.rotation {
+            g.yaw = yaw;
+            g.pitch = pitch;
+            g.head_yaw = yaw;
+        }
+        if let Some(ground) = a.on_ground {
+            g.on_ground = ground;
+        }
+        if let Some(velocity) = a.velocity
+            && let Some(body) = g.loaded_body.as_mut()
+        {
+            body.velocity = velocity;
+        }
+    }
     let recentered = if request.place {
         hub.finish_arrival(i, request.announce)
     } else {
