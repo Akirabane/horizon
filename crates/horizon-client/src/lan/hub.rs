@@ -2062,9 +2062,35 @@ impl Hub {
             if o.tab_hidden.remove(&g.uuid) {
                 continue;
             }
-            o.sender.send(left.clone());
+            if !g.quiet_leave {
+                o.sender.send(left.clone());
+            }
         }
         g
+    }
+
+    /// Takes the frozen player `uuid` out of the world because a proxy moved it to another
+    /// server: the others see it go (its entity and its player-list entry), but nothing is
+    /// saved (the other server has the player now) and, unless `announce`, the "left the game"
+    /// line is not sent. The game is told it left, marked released, so it saves nothing.
+    pub fn release_moved(&mut self, uuid: u128, announce: bool) -> Result<(), &'static str> {
+        let Some(i) = self
+            .guests
+            .iter()
+            .position(|g| g.uuid == uuid && g.placed && g.frozen_since.is_some())
+        else {
+            return Err("that player is not frozen for a hand-over");
+        };
+        let g = &mut self.guests[i];
+        g.quiet_leave = !announce;
+        g.left_reason = "moved to another server".to_owned();
+        g.sender
+            .disconnect(translatable("multiplayer.disconnect.generic", &[]));
+        let mut gone = self.remove_guest(i, "moved to another server");
+        gone.released = true;
+        gone.frozen_since = None;
+        self.pending_kicks.push(HostEvent::Left(Box::new(gone)));
+        Ok(())
     }
 
     /// `ServerTickRateManager.updateStepTicks` / `updateStateToClients`:

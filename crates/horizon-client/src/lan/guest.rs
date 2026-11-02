@@ -339,6 +339,11 @@ pub struct Guest {
     /// what it sends, other than its acknowledgements, is not acted on, until the
     /// hand-over is over, aborted or too old.
     pub frozen_since: Option<u64>,
+    /// Leaving for another server (`player-release moved`) without the "left the game" line.
+    pub quiet_leave: bool,
+    /// Taken out of the world because a proxy moved it to another server: the game neither
+    /// saves its player file nor its records, since the other server has the player now.
+    pub released: bool,
     /// Root command names the mods took out of this player's command tree
     /// (`native_player_commands_sent`); their tree is sent without them.
     pub hidden_commands: Vec<String>,
@@ -509,6 +514,8 @@ impl Guest {
             held: false,
             held_since: 0,
             frozen_since: None,
+            quiet_leave: false,
+            released: false,
             hidden_commands: Vec::new(),
             flying_speed: 0.05,
             dimension: "minecraft:overworld".into(),

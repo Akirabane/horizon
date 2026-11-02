@@ -227,6 +227,17 @@ next tick, when its first tick sends its health, experience and advancements as 
 `announce` true the others are told it has come, with the join line and a player-list entry; with false they
 are not told and have no list entry for it.
 
+`player-release <uuid> moved [announce]` and `player-release <uuid> abort` end the hand-over of a player
+that `player-export <uuid> freeze` froze. `moved` takes the player out of the world because another server has it
+now: the others see its entity and its list entry go, nothing is written to its player file or its records (the
+other server has the player), the log and the `leave` event record the departure with the reason
+`moved to another server`, and the player's connection is closed with a generic disconnect. The "left the game"
+line is not sent unless `announce` is added. Nothing is deleted: the player's file here stays as it was, and a
+server that a proxy is the only way to reach never reads it without the proxy. `abort` lifts the freeze and the
+player goes on as if nothing had happened. Both reply `{"ok": true, "released": "moved"}` (with `"announced"`) or
+`{"ok": true, "released": "abort"}`, and are refused with `{"error": "..."}` for a player who is not frozen. A
+freeze nobody ends is let go after ten seconds.
+
 **The headless engine** comes after perf-ticks-2's work lands: Resources split into shared and per-game, the
 game built in `Game::new`, the integrated server on its own thread. On that base:
 

@@ -228,6 +228,43 @@ pub fn drop_request(hub: &mut Hub, args: &str) -> serde_json::Value {
     serde_json::json!({ "ok": true, "held": held, "expected": expected })
 }
 
+/// `player-release <uuid> moved [announce]` or `player-release <uuid> abort`: ends the
+/// hand-over of a frozen player. `moved` takes it out of the world, saving nothing and, unless
+/// `announce`, without the "left the game" line; `abort` lets it go on as it was.
+pub fn release_request(hub: &mut Hub, args: &str) -> serde_json::Value {
+    let mut parts = args.split_whitespace();
+    let Some(uuid) = parts.next().and_then(parse_uuid) else {
+        return error("player-release needs the player's unique id");
+    };
+    let how = parts.next();
+    let announce = match (how, parts.next()) {
+        (Some("moved"), None) => false,
+        (Some("moved"), Some("announce")) => true,
+        (Some("abort"), None) => false,
+        _ => return error("player-release <uuid> is followed by moved [announce] or abort"),
+    };
+    if parts.next().is_some() {
+        return error("player-release takes a unique id, moved or abort, and at most announce");
+    }
+    if how == Some("moved") {
+        return match hub.release_moved(uuid, announce) {
+            Ok(()) => serde_json::json!({ "ok": true, "released": "moved", "announced": announce }),
+            Err(why) => error(why),
+        };
+    }
+    match hub
+        .guests
+        .iter_mut()
+        .find(|g| g.uuid == uuid && g.frozen_since.is_some())
+    {
+        Some(g) => {
+            g.frozen_since = None;
+            serde_json::json!({ "ok": true, "released": "abort" })
+        }
+        None => error("that player is not frozen for a hand-over"),
+    }
+}
+
 /// Whether a held player that joined at tick `since` has waited too long at tick
 /// `now` for its import.
 pub fn held_too_long(since: u64, now: u64) -> bool {
@@ -1312,6 +1349,120 @@ mod hub_tests {
         assert!(
             error.contains("no player with that unique id is held"),
             "{error}"
+        );
+    }
+
+    // ---- player-release -----------------------------------------------------
+
+    /// A watcher and a placed player frozen for a hand-over.
+    fn frozen_with_a_watcher() -> (Hub, Receiver<Out>, Receiver<Out>) {
+        let mut hub = hub();
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        let (mut mover, mine) = guest(2, UUID_N, "Mover");
+        mover.placed = true;
+        hub.guests.push(mover);
+        hub.ticks = 50;
+        hub.guests[1].frozen_since = Some(hub.ticks);
+        let _ = (ids(&seen), ids(&mine));
+        (hub, seen, mine)
+    }
+
+    fn left_events(hub: &mut Hub) -> Vec<Box<Guest>> {
+        let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
+        let border = crate::worldborder::WorldBorder::default();
+        let mut next = 100;
+        let mut ctx = tick_context(&mut world, &border, &mut next);
+        hub.poll(&mut ctx)
+            .into_iter()
+            .filter_map(|e| match e {
+                crate::lan::hub::HostEvent::Left(g) => Some(g),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Moved to another server: the others see it go, but nothing is said and nothing saved.
+    #[test]
+    fn a_moved_player_leaves_the_world_without_the_leave_line_and_is_not_saved() {
+        let (mut hub, seen, mine) = frozen_with_a_watcher();
+        let reply = super::release_request(&mut hub, &format!("{UUID} moved"));
+        assert_eq!(
+            reply,
+            serde_json::json!({"ok": true, "released": "moved", "announced": false})
+        );
+        assert_eq!(hub.guests.len(), 1, "the mover is out of the hub");
+        let told = ids(&seen);
+        assert!(told.contains(&id::PLAYER_INFO_REMOVE), "{told:?}");
+        assert!(told.contains(&id::REMOVE_ENTITIES), "{told:?}");
+        assert!(!told.contains(&id::SYSTEM_CHAT), "no leave line: {told:?}");
+        assert!(matches!(mine.try_recv(), Ok(Out::Disconnect(_))));
+        // The game is told it left, released: it saves no file and no record.
+        let left = left_events(&mut hub);
+        assert_eq!(left.len(), 1);
+        assert!(left[0].released && left[0].placed && left[0].frozen_since.is_none());
+        assert_eq!(left[0].left_reason, "moved to another server");
+    }
+
+    #[test]
+    fn a_moved_player_can_be_announced_as_leaving() {
+        let (mut hub, seen, _mine) = frozen_with_a_watcher();
+        let reply = super::release_request(&mut hub, &format!("{UUID} moved announce"));
+        assert_eq!(reply["announced"], true);
+        assert!(ids(&seen).contains(&id::SYSTEM_CHAT));
+    }
+
+    /// For a player who is not there to be moved, the control: a placed player's leaving is
+    /// announced as always (see `a_placed_player_leaving_is_announced`).
+    #[test]
+    fn an_aborted_hand_over_lets_the_player_go_on_as_it_was() {
+        let (mut hub, seen, mine) = frozen_with_a_watcher();
+        let reply = super::release_request(&mut hub, &format!("{UUID} abort"));
+        assert_eq!(reply, serde_json::json!({"ok": true, "released": "abort"}));
+        assert_eq!(hub.guests.len(), 2);
+        assert!(hub.guests[1].frozen_since.is_none() && hub.guests[1].placed);
+        assert_eq!(ids(&seen), Vec::<i32>::new());
+        assert_eq!(ids(&mine), Vec::<i32>::new());
+        assert!(left_events(&mut hub).is_empty());
+    }
+
+    #[test]
+    fn a_release_is_refused_for_a_player_who_is_not_frozen_and_changes_nothing() {
+        let (mut hub, seen, _mine) = frozen_with_a_watcher();
+        hub.guests[1].frozen_since = None;
+        for how in ["moved", "abort"] {
+            let reply = super::release_request(&mut hub, &format!("{UUID} {how}"));
+            assert!(
+                reply["error"].as_str().unwrap().contains("not frozen"),
+                "{reply}"
+            );
+        }
+        // Not connected at all.
+        let reply = super::release_request(&mut hub, "00000000000000000000000000000001 moved");
+        assert!(reply["error"].is_string());
+        assert_eq!(hub.guests.len(), 2);
+        assert_eq!(ids(&seen), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn a_release_must_say_how_and_nothing_more() {
+        let (mut hub, _seen, _mine) = frozen_with_a_watcher();
+        for args in [
+            "",
+            "nonsense moved",
+            UUID,
+            &format!("{UUID} later"),
+            &format!("{UUID} moved quietly"),
+            &format!("{UUID} abort announce"),
+            &format!("{UUID} moved announce now"),
+        ] {
+            let reply = super::release_request(&mut hub, args);
+            assert!(reply["error"].is_string(), "{args:?} gave {reply}");
+        }
+        assert!(
+            hub.guests[1].frozen_since.is_some(),
+            "no refusal touched the player"
         );
     }
 }

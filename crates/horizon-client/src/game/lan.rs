@@ -1414,7 +1414,7 @@ impl Game<'_> {
         guest: &mut horizon_client::lan::guest::Guest,
     ) {
         self.guest_attachments_into(guest);
-        if guest.placed {
+        if guest.placed && !guest.released {
             if host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) {
                 playerdata::save_owner(guest, &mut self.level, &self.world_root);
             } else {
@@ -1563,7 +1563,7 @@ impl Game<'_> {
         host: &LanHost,
         guest: &horizon_client::lan::guest::Guest,
     ) {
-        if !guest.placed || self.adv.tree.list.is_empty() {
+        if !guest.placed || guest.released || self.adv.tree.list.is_empty() {
             return;
         }
         let Some(uuid) = self.records_uuid(host, guest.uuid) else {
@@ -1854,10 +1854,13 @@ impl Game<'_> {
                                 super::dedicated::java_double(z)
                             ),
                         );
-                        super::dedicated::log(
-                            "INFO",
-                            &format!("System chat: {} joined the game", g.name),
-                        );
+                        // A held player is not announced: the line comes with its import.
+                        if g.placed {
+                            super::dedicated::log(
+                                "INFO",
+                                &format!("System chat: {} joined the game", g.name),
+                            );
+                        }
                     } else if self.player.is_some()
                         && let Some(g) = host.hub.guest(conn)
                         && g.placed
@@ -1908,7 +1911,8 @@ impl Game<'_> {
                     self.guest_attachments.remove(&guest.uuid);
                     host.play.remove(&guest.conn);
                     self.guest_combat.remove(&guest.conn);
-                    if self.options.dedicated.is_some() && guest.placed {
+                    // A held player was recorded as joined at its login: it leaves too.
+                    if self.options.dedicated.is_some() && (guest.placed || guest.held) {
                         super::dedicated::events::record(
                             "leave",
                             &guest.name,

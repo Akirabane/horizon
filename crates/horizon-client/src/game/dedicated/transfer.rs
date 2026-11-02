@@ -49,6 +49,13 @@ impl Game<'_> {
         let Some(mut host) = self.lan.take() else {
             return json!({ "error": "the server is not open to players" });
         };
+        let name = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.uuid == uuid)
+            .map(|g| g.name.clone())
+            .unwrap_or_default();
         let reply = match horizon_client::lan::import::import_player(&mut host.hub, uuid, &request)
         {
             Ok(done) => {
@@ -63,6 +70,9 @@ impl Game<'_> {
                         .retain(|id, _| tree.by_id.contains_key(id));
                     g.advancements = progress;
                     g.advancements_loaded = true;
+                }
+                if done.announce {
+                    super::log("INFO", &format!("System chat: {name} joined the game"));
                 }
                 json!({ "ok": true, "parts": done.parts, "announced": done.announce })
             }
