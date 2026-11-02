@@ -2090,4 +2090,82 @@ mod hub_tests {
         let gone = hub.remove_guest(0, "Disconnected");
         assert_eq!(gone.left_reason, "Timed out");
     }
+
+    // ---- an import replaces the inventory, it does not mix with the target's own ----
+
+    /// A player who has played on the target before has its own inventory in the file the
+    /// target loaded when it logged in. The imported inventory must REPLACE it: a slot the
+    /// record leaves empty is empty afterwards, not the target's old item.
+    #[test]
+    fn an_imported_inventory_replaces_the_one_the_target_loaded_for_the_player() {
+        use crate::items::ItemStack;
+        let stack = |name: &str, count: u32| ItemStack {
+            item: std::sync::Arc::from(name),
+            count,
+            damage: 0,
+            extra: None,
+        };
+        let (record, mut hub, _seen, _mine) = held_in_a_second_hub();
+        // What the target's file gave the held player: items in slots the record leaves empty,
+        // in the armour and the off hand, and an ender chest item.
+        {
+            let g = &mut hub.guests[1];
+            g.inventory[5] = Some(stack("minecraft:dirt", 3));
+            g.inventory[20] = Some(stack("minecraft:cobblestone", 9));
+            g.armor[0] = Some(stack("minecraft:iron_boots", 1));
+            g.offhand = Some(stack("minecraft:shield", 1));
+            g.ender_items[0] = Some(stack("minecraft:diamond", 2));
+        }
+        import_player(
+            &mut hub,
+            UUID_N,
+            &serde_json::json!({ "record": record, "place": false }),
+        )
+        .unwrap();
+        let g = &hub.guests[1];
+        // The exported player had only the stone in slot 0.
+        assert_eq!(
+            g.inventory[0].as_ref().map(|s| (&*s.item, s.count)),
+            Some(("minecraft:stone", 5))
+        );
+        for slot in 1..36 {
+            assert!(
+                g.inventory[slot].is_none(),
+                "slot {slot} still holds the target's old item"
+            );
+        }
+        assert!(g.armor.iter().all(Option::is_none), "the old armour stayed");
+        assert!(g.offhand.is_none(), "the old off hand item stayed");
+        assert!(
+            g.ender_items.iter().all(Option::is_none),
+            "the old ender chest stayed"
+        );
+        // And what the client is told is that inventory: the window content has no dirt.
+        let items = (0..46).filter(|&s| g.menu_slot(s).is_some()).count();
+        assert_eq!(items, 1, "the inventory menu holds the stone only");
+    }
+
+    /// Parts that are not imported keep the target's own, items included.
+    #[test]
+    fn an_inventory_that_is_not_imported_keeps_the_targets_items() {
+        use crate::items::ItemStack;
+        let (record, mut hub, _seen, _mine) = held_in_a_second_hub();
+        hub.guests[1].inventory[5] = Some(ItemStack {
+            item: std::sync::Arc::from("minecraft:dirt"),
+            count: 3,
+            damage: 0,
+            extra: None,
+        });
+        let request =
+            serde_json::json!({ "record": record, "parts": ["experience"], "place": false });
+        import_player(&mut hub, UUID_N, &request).unwrap();
+        assert!(
+            hub.guests[1].inventory[5].is_some(),
+            "the target's dirt must stay"
+        );
+        assert!(
+            hub.guests[1].inventory[0].is_none(),
+            "the record's stone must not come"
+        );
+    }
 }

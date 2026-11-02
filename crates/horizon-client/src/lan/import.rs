@@ -344,6 +344,21 @@ pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Impor
         }
     }
     let kept = Kept::of(&hub.guests[i], &request.parts);
+    // `apply` fills the slots a record holds and leaves the others as they are, which is right
+    // for a player loaded into an empty guest and wrong here: the held player holds what its
+    // own file gave it on this server, and an imported inventory REPLACES that, a slot the
+    // record leaves empty being empty afterwards.
+    {
+        let g = &mut hub.guests[i];
+        if request.parts.contains(&"inventory") {
+            g.inventory.iter_mut().for_each(|slot| *slot = None);
+            g.armor = Default::default();
+            g.offhand = None;
+        }
+        if request.parts.contains(&"ender_chest") {
+            g.ender_items.iter_mut().for_each(|slot| *slot = None);
+        }
+    }
     playerdata::apply(&mut hub.guests[i], &level);
     kept.restore(&mut hub.guests[i], &request.parts);
     let recentered = if request.place {
