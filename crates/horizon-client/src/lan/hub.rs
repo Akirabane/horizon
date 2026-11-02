@@ -763,11 +763,16 @@ impl Hub {
     pub fn here(&self, g: &Guest) -> bool {
         g.placed && g.dimension == self.config.dimension
     }
+    /// Whether a guest is sent the level in place: the players placed in it, and
+    /// the held ones, which look at it without being part of it.
+    pub fn watches(&self, g: &Guest) -> bool {
+        (g.placed || g.held) && g.dimension == self.config.dimension
+    }
     /// `PlayerList.broadcastAll(packet, dimension)`: the players in the
     /// level in place.
     pub fn broadcast_level(&self, packet: &C) {
         let body = packet.encode();
-        for g in self.guests.iter().filter(|g| self.here(g)) {
+        for g in self.guests.iter().filter(|g| self.watches(g)) {
             g.sender.send(body.clone());
         }
     }
@@ -921,6 +926,37 @@ impl Hub {
                 name,
                 reason: text,
             });
+        }
+    }
+
+    /// Lets go of what a proxy that stopped answering left behind: the players it
+    /// said would come and did not, and the held players whose hand-over never
+    /// finished. Neither may wait for ever, and the held player goes without a
+    /// word to anyone, since no one was ever told about it.
+    fn expire_arrivals(&mut self, events: &mut Vec<HostEvent>) {
+        for uuid in self.arrivals.expire(std::time::Instant::now()) {
+            events.push(HostEvent::Warn(format!(
+                "player {} was expected from another server and never came",
+                horizon_protocol::crypto::uuid_string(uuid)
+            )));
+        }
+        let stale: Vec<u32> = self
+            .guests
+            .iter()
+            .filter(|g| {
+                g.held && !g.placed && super::arrivals::held_too_long(g.held_since, self.ticks)
+            })
+            .map(|g| g.conn)
+            .collect();
+        for conn in stale {
+            if let Some(g) = self.guest(conn) {
+                events.push(HostEvent::Warn(format!(
+                    "{} was held for {} ticks and the hand-over never finished: dropped",
+                    g.name,
+                    super::arrivals::HELD_MAX_TICKS
+                )));
+            }
+            self.kick(conn, translatable("disconnect.timeout", &[]));
         }
     }
 
@@ -1644,6 +1680,7 @@ impl Hub {
         self.ticks += 1;
         self.anticheat_tick(ctx.tick_rate);
         let mut events = std::mem::take(&mut self.pending_kicks);
+        self.expire_arrivals(&mut events);
         for event in self.lan.poll() {
             match event {
                 NetEvent::Joined(j) => {
@@ -1719,6 +1756,31 @@ impl Hub {
         events
     }
 
+    /// Keeps, in a held player's inbox, the packets that answer the server
+    /// (teleport, chunk batch, loaded, keep-alive, ping, tick end, client
+    /// information) and drops the rest.
+    fn keep_acknowledgements(&mut self, i: usize) {
+        let g = &mut self.guests[i];
+        let mut bytes = 0;
+        g.inbox.retain(|(packet, size)| {
+            let keep = matches!(
+                packet,
+                S::AcceptTeleportation(_)
+                    | S::PlayerLoaded(_)
+                    | S::ChunkBatchReceived(_)
+                    | S::ClientInformation(_)
+                    | S::ClientTickEnd(_)
+                    | S::KeepAlive(_)
+                    | S::Pong(_)
+            );
+            if keep {
+                bytes += *size;
+            }
+            keep
+        });
+        g.inbox_bytes = bytes;
+    }
+
     /// Handle the players in this level's packets (`ServerGamePacketListenerImpl`
     /// for each), before the level's scheduled block ticks so a place landed in
     /// the same tick as a falling block's schedule still sees the support
@@ -1730,6 +1792,12 @@ impl Hub {
             if self.here(&self.guests[i]) {
                 self.process_inbox(i, ctx, &mut events);
                 self.tick_floating(i, &mut events);
+            } else if self.guests[i].held && self.watches(&self.guests[i]) {
+                // A held player only answers what the server asked of it:
+                // its acknowledgements keep the chunks coming. Whatever else
+                // it sends (moves, clicks, commands) is not for the world.
+                self.keep_acknowledgements(i);
+                self.process_inbox(i, ctx, &mut events);
             }
         }
         events
@@ -1741,7 +1809,7 @@ impl Hub {
     /// earlier (`drain_packets`) so scheduled ticks see what they placed.
     pub fn tick_level(&mut self, ctx: &mut TickCtx) -> Vec<HostEvent> {
         let events = Vec::new();
-        if !self.guests.iter().any(|g| self.here(g)) {
+        if !self.guests.iter().any(|g| self.watches(g)) {
             // ServerTickRateManager broadcasts a change to the players there
             // are; one who joins later is sent the state as it is then
             // (`updateJoiningPlayer`).
@@ -1832,7 +1900,7 @@ impl Hub {
         }
     }
 
-    fn remove_guest(&mut self, i: usize, reason: &str) -> Guest {
+    pub(super) fn remove_guest(&mut self, i: usize, reason: &str) -> Guest {
         let mut g = self.guests.remove(i);
         if let Some(m) = g
             .menu
@@ -1978,7 +2046,7 @@ impl Hub {
         }
         let mut batches = Vec::new();
         for i in 0..self.guests.len() {
-            if self.here(&self.guests[i]) {
+            if self.watches(&self.guests[i]) {
                 self.update_view(i);
                 if let Some(batch) = self.next_batch(i, world, ctx.streaming) {
                     batches.push((i, batch));
@@ -2202,7 +2270,7 @@ impl Hub {
             .iter()
             .filter_map(|key| Some((*key, self.encoder.biome_data(world.chunks.get(key)?))))
             .collect();
-        for g in self.guests.iter().filter(|g| self.here(g)) {
+        for g in self.guests.iter().filter(|g| self.watches(g)) {
             let chunks: Vec<_> = data
                 .iter()
                 .filter(|(key, _)| g.sent_chunks.contains(key))
@@ -2236,7 +2304,7 @@ impl Hub {
             let viewers: Vec<usize> = (0..self.guests.len())
                 .filter(|&i| {
                     let g = &self.guests[i];
-                    self.here(g)
+                    self.watches(g)
                         && tracked(g, x, z)
                         && (-1..=1).any(|dz| (-1..=1).any(|dx| !tracked(g, x + dx, z + dz)))
                 })
@@ -2278,7 +2346,7 @@ impl Hub {
                 }
                 let viewers: Vec<usize> = (0..self.guests.len())
                     .filter(|&i| {
-                        self.here(&self.guests[i]) && self.guests[i].sent_chunks.contains(&key)
+                        self.watches(&self.guests[i]) && self.guests[i].sent_chunks.contains(&key)
                     })
                     .collect();
                 if viewers.is_empty() {
@@ -2343,7 +2411,7 @@ impl Hub {
             }
             let viewers: Vec<usize> = (0..self.guests.len())
                 .filter(|&i| {
-                    self.here(&self.guests[i]) && self.guests[i].sent_chunks.contains(&(sx, sz))
+                    self.watches(&self.guests[i]) && self.guests[i].sent_chunks.contains(&(sx, sz))
                 })
                 .collect();
             if viewers.is_empty() {
@@ -2639,7 +2707,9 @@ impl Hub {
             .unwrap_or_default();
         let mut outs = std::mem::take(&mut self.entity_out);
         let dimension = &self.config.dimension;
-        let here = |g: &Guest| g.placed && g.dimension == *dimension;
+        // The viewers include the held players: they are shown the entities
+        // around them, but (above) are not among the entities shown.
+        let here = |g: &Guest| (g.placed || g.held) && g.dimension == *dimension;
         outs.resize_with(self.guests.iter().filter(|g| here(g)).count(), Vec::new);
         // The prediction's replay excuses a client that may still have an entity that left it.
         let recording = self.recording();

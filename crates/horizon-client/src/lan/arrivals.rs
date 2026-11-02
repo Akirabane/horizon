@@ -213,7 +213,13 @@ mod hub_tests {
             announce: false,
             ..NetConfig::lan(0, "ArrivalsTest".into(), 4)
         };
-        let sync = std::sync::Arc::new(data::SyncData::empty());
+        let mut sync = data::SyncData::empty();
+        // The entity types the tracker names: the player, as id 0.
+        sync.builtin.registries.insert(
+            "minecraft:entity_type".to_string(),
+            horizon_protocol::registry::Ids::from_names(vec!["minecraft:player".to_string()]),
+        );
+        let sync = std::sync::Arc::new(sync);
         let lan = Lan::start_with(sync.clone(), config).unwrap();
         let encoder = ChunkEncoder::new(
             [] as [(std::sync::Arc<str>, bool); 0],
@@ -261,11 +267,13 @@ mod hub_tests {
         (g, rx)
     }
 
-    /// The ids of the packets waiting in a channel, in order.
-    fn ids(rx: &Receiver<Out>) -> Vec<i32> {
+    /// The packets waiting in a channel, in order, each as its id and payload.
+    fn packets(rx: &Receiver<Out>) -> Vec<(i32, Vec<u8>)> {
         let mut out = Vec::new();
         let mut one = |body: &[u8]| {
-            out.push(horizon_protocol::buf::Reader::new(body).varint().unwrap());
+            let mut r = horizon_protocol::buf::Reader::new(body);
+            let id = r.varint().unwrap();
+            out.push((id, r.rest().to_vec()));
         };
         while let Ok(o) = rx.try_recv() {
             match o {
@@ -275,6 +283,11 @@ mod hub_tests {
             }
         }
         out
+    }
+
+    /// The ids of the packets waiting in a channel, in order.
+    fn ids(rx: &Receiver<Out>) -> Vec<i32> {
+        packets(rx).into_iter().map(|(id, _)| id).collect()
     }
 
     fn place(hub: &mut Hub, conn: u32) {
@@ -367,5 +380,235 @@ mod hub_tests {
         assert!(hub.guests[1].placed && !hub.guests[1].held);
         assert!(ids(&seen).contains(&id::SYSTEM_CHAT));
         assert_eq!(hub.arrivals.len(), 1, "the other player is still expected");
+    }
+
+    fn tick_context<'a>(
+        world: &'a mut crate::world::World,
+        border: &'a crate::worldborder::WorldBorder,
+        next: &'a mut u32,
+    ) -> TickCtx<'a> {
+        TickCtx {
+            world,
+            entities: &[],
+            next_entity: next,
+            spawn: [0.5, 64.0, 0.5],
+            difficulty: 2,
+            difficulty_locked: false,
+            clock_rate: 1.0,
+            tick_rate: 20.0,
+            tick_frozen: false,
+            tick_steps: Default::default(),
+            collision: None,
+            border,
+            streaming: None,
+        }
+    }
+
+    fn is_warn(event: &crate::lan::hub::HostEvent, needle: &str) -> bool {
+        matches!(event, crate::lan::hub::HostEvent::Warn(w) if w.contains(needle))
+    }
+
+    /// An expectation nobody came for is reported once and forgotten.
+    #[test]
+    fn an_expectation_nobody_came_for_is_reported_and_swept() {
+        let mut hub = hub();
+        // Already past its time when the hub next ticks.
+        hub.arrivals
+            .expect(7, Duration::ZERO, Instant::now())
+            .unwrap();
+        let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
+        let border = crate::worldborder::WorldBorder::default();
+        let mut next = 100;
+        let mut ctx = tick_context(&mut world, &border, &mut next);
+        let events = hub.poll(&mut ctx);
+        assert_eq!(
+            events.iter().filter(|e| is_warn(e, "never came")).count(),
+            1
+        );
+        assert!(hub.arrivals.is_empty());
+    }
+
+    /// A held player whose hand-over never finishes is dropped after a minute of
+    /// ticks, and the players in the world are told nothing about it.
+    #[test]
+    fn a_held_player_that_is_never_imported_is_dropped_without_a_word() {
+        let mut hub = hub();
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        let (newcomer, mine) = guest(2, 2, "Newcomer");
+        hub.guests.push(newcomer);
+        hub.arrivals
+            .expect(2, Duration::from_secs(10), Instant::now())
+            .unwrap();
+        place(&mut hub, 2);
+        let _ = (ids(&seen), ids(&mine));
+        let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
+        let border = crate::worldborder::WorldBorder::default();
+        let mut next = 100;
+        // Two ticks short of the limit (poll counts one): still waiting.
+        hub.ticks = hub.guests[1].held_since + super::HELD_MAX_TICKS - 2;
+        let mut ctx = tick_context(&mut world, &border, &mut next);
+        let events = hub.poll(&mut ctx);
+        assert!(!events.iter().any(|e| is_warn(e, "dropped")));
+        // At the limit it is kicked, with a warning in the log.
+        let events = hub.poll(&mut ctx);
+        assert!(
+            events
+                .iter()
+                .any(|e| is_warn(e, "Newcomer") && is_warn(e, "dropped"))
+        );
+        assert!(matches!(mine.try_recv(), Ok(Out::Disconnect(_))));
+        // The connection closes: the hub removes the guest.
+        let gone = hub.remove_guest(1, "Timed out");
+        assert!(gone.held && !gone.placed);
+        assert_eq!(
+            ids(&seen),
+            Vec::<i32>::new(),
+            "the watcher must hear nothing"
+        );
+    }
+
+    /// The control for the one above: when a placed player leaves, the others
+    /// are told.
+    #[test]
+    fn a_placed_player_leaving_is_announced() {
+        let mut hub = hub();
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        let (mut leaver, _mine) = guest(2, 2, "Leaver");
+        leaver.placed = true;
+        hub.guests.push(leaver);
+        hub.remove_guest(1, "bye");
+        let told = ids(&seen);
+        assert!(told.contains(&id::PLAYER_INFO_REMOVE), "{told:?}");
+        assert!(told.contains(&id::SYSTEM_CHAT), "{told:?}");
+    }
+
+    /// A held player is sent the chunks and the entities around it, and takes
+    /// nothing from the players in the world: they still get their chunks, and
+    /// never learn the held player's entity.
+    #[test]
+    fn a_held_player_sees_the_world_without_the_world_seeing_it() {
+        let mut hub = hub();
+        let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
+        for x in -5..=5 {
+            for z in -5..=5 {
+                // Only a lit column is sent.
+                let mut chunk = crate::chunk::Chunk::empty(x, z);
+                chunk.lit = true;
+                world.chunks.insert((x, z), std::sync::Arc::new(chunk));
+            }
+        }
+        let border = crate::worldborder::WorldBorder::default();
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        let (newcomer, mine) = guest(2, 2, "Newcomer");
+        hub.guests.push(newcomer);
+        // A second player in the world, to show that players are tracked at all.
+        let (mut other, _other_rx) = guest(3, 3, "Other");
+        other.placed = true;
+        hub.guests.push(other);
+        hub.arrivals
+            .expect(2, Duration::from_secs(10), Instant::now())
+            .unwrap();
+        place(&mut hub, 2);
+        // The server has run a few ticks since they joined.
+        hub.ticks = 10;
+        let mut next = 100;
+        let mut ctx = tick_context(&mut world, &border, &mut next);
+        let (mut held_chunks, mut watcher_chunks) = (0, 0);
+        let (mut held_adds, mut watcher_adds) = (Vec::new(), Vec::new());
+        for _ in 0..30 {
+            hub.tick_level(&mut ctx);
+            hub.end_tick();
+            let mine_now = packets(&mine);
+            let seen_now = packets(&seen);
+            held_chunks += mine_now
+                .iter()
+                .filter(|p| p.0 == id::LEVEL_CHUNK_WITH_LIGHT)
+                .count();
+            watcher_chunks += seen_now
+                .iter()
+                .filter(|p| p.0 == id::LEVEL_CHUNK_WITH_LIGHT)
+                .count();
+            held_adds.extend(added_of(&mine_now));
+            watcher_adds.extend(added_of(&seen_now));
+        }
+        assert!(
+            held_chunks > 0,
+            "the held player is sent chunks (held {held_chunks}, watcher {watcher_chunks})"
+        );
+        assert!(watcher_chunks > 0, "the placed player is still sent chunks");
+        assert!(
+            watcher_adds.contains(&3),
+            "players are tracked at all: {watcher_adds:?}"
+        );
+        assert!(
+            held_adds.contains(&1),
+            "the held player sees the watcher: {held_adds:?}"
+        );
+        assert!(
+            !watcher_adds.contains(&2),
+            "the watcher must not see the held player: {watcher_adds:?}"
+        );
+    }
+
+    /// The entity ids in the Add Entity packets among some packets.
+    fn added_of(packets: &[(i32, Vec<u8>)]) -> Vec<i32> {
+        packets
+            .iter()
+            .filter(|(i, _)| *i == id::ADD_ENTITY)
+            .map(|(_, payload)| {
+                horizon_protocol::buf::Reader::new(payload)
+                    .varint()
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    /// A held player's acknowledgements are handled (they keep the chunks
+    /// coming), and nothing else it sends reaches the world.
+    #[test]
+    fn a_held_player_is_heard_only_when_it_acknowledges() {
+        use horizon_protocol::packets::play::{ChunkBatchReceived, MovePlayerPos, Serverbound};
+        let mut hub = hub();
+        let (newcomer, _mine) = guest(2, 2, "Newcomer");
+        hub.guests.push(newcomer);
+        hub.arrivals
+            .expect(2, Duration::from_secs(10), Instant::now())
+            .unwrap();
+        place(&mut hub, 2);
+        let g = &mut hub.guests[0];
+        g.unacknowledged = 3;
+        let before = g.position;
+        g.inbox.push_back((
+            Serverbound::MovePlayerPos(MovePlayerPos {
+                x: before[0] + 40.0,
+                y: before[1],
+                z: before[2],
+                flags: 1,
+            }),
+            10,
+        ));
+        g.inbox.push_back((
+            Serverbound::ChunkBatchReceived(ChunkBatchReceived {
+                chunks_per_tick: 12.0,
+            }),
+            5,
+        ));
+        g.inbox_bytes = 15;
+        let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
+        let border = crate::worldborder::WorldBorder::default();
+        let mut next = 100;
+        let mut ctx = tick_context(&mut world, &border, &mut next);
+        hub.drain_packets(&mut ctx);
+        let g = &hub.guests[0];
+        assert_eq!(g.position, before, "a held player does not move");
+        assert_eq!(g.unacknowledged, 2, "its acknowledgement was handled");
+        assert_eq!(g.chunks_per_tick, 12.0);
+        assert_eq!(g.inbox_bytes, 0);
     }
 }
