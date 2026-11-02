@@ -33,6 +33,45 @@ impl Game<'_> {
         reply
     }
 
+    /// `player-import <uuid> <json>`: applies a record to the held player (`lan/import.rs`), lets it
+    /// into the world, and gives it its advancements, which need the game's tree.
+    pub(super) fn player_import(&mut self, args: &str) -> Value {
+        let Some((id, request)) = args.trim().split_once(char::is_whitespace) else {
+            return json!({ "error": "player-import needs a unique id and a request" });
+        };
+        let Some(uuid) = arrivals::parse_uuid(id) else {
+            return json!({ "error": "player-import needs the player's unique id" });
+        };
+        let request: Value = match serde_json::from_str(request.trim()) {
+            Ok(v) => v,
+            Err(e) => return json!({ "error": format!("the request is not JSON: {e}") }),
+        };
+        let Some(mut host) = self.lan.take() else {
+            return json!({ "error": "the server is not open to players" });
+        };
+        let reply = match horizon_client::lan::import::import_player(&mut host.hub, uuid, &request)
+        {
+            Ok(done) => {
+                if let Some(saved) = done.advancements
+                    && let Some(g) = host.hub.guests.iter_mut().find(|g| g.uuid == uuid)
+                {
+                    let tree = self.advancement_tree();
+                    let mut progress = horizon_client::advancements::Progress::from_json(&saved);
+                    // PlayerAdvancements.applyFrom: advancements this server lacks are dropped.
+                    progress
+                        .criteria
+                        .retain(|id, _| tree.by_id.contains_key(id));
+                    g.advancements = progress;
+                    g.advancements_loaded = true;
+                }
+                json!({ "ok": true, "parts": done.parts, "announced": done.announce })
+            }
+            Err(e) => json!({ "error": e }),
+        };
+        self.lan = Some(host);
+        reply
+    }
+
     fn export_from(&mut self, host: &mut LanHost, uuid: u128, freeze: bool) -> Value {
         let i = match arrivals::check_exportable(&host.hub, uuid) {
             Ok(i) => i,

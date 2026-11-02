@@ -1115,4 +1115,203 @@ mod hub_tests {
         assert!(super::frozen_too_long(10, 10 + 200));
         assert!(!super::frozen_too_long(500, 100));
     }
+
+    // ---- player-import ------------------------------------------------------
+
+    /// The record of the exported guest, and a second hub in which the same player is held
+    /// (with a placed watcher), ready to take it.
+    fn held_in_a_second_hub() -> (serde_json::Value, Hub, Receiver<Out>, Receiver<Out>) {
+        let (mut source, i) = exported_guest();
+        let record = super::export_record(&mut source, i, false, serde_json::Value::Null).unwrap();
+        let mut hub = hub();
+        let (mut watcher, seen) = guest(1, 1, "Watcher");
+        watcher.placed = true;
+        hub.guests.push(watcher);
+        assert_eq!(
+            super::expect_request(&mut hub, UUID, Instant::now())["ok"],
+            true
+        );
+        let (newcomer, mine) = guest(2, UUID_N, "Alex");
+        hub.guests.push(newcomer);
+        place(&mut hub, 2);
+        let _ = (ids(&seen), ids(&mine));
+        (record, hub, seen, mine)
+    }
+
+    use crate::lan::import::import_player;
+
+    #[test]
+    fn a_whole_record_makes_the_held_player_the_player_it_was_exported_from() {
+        let (record, mut hub, seen, mine) = held_in_a_second_hub();
+        let (source, i) = exported_guest();
+        let done =
+            import_player(&mut hub, UUID_N, &serde_json::json!({ "record": record })).unwrap();
+        assert_eq!(done.parts.len(), crate::lan::import::PARTS.len());
+        assert!(done.announce);
+        let g = &hub.guests[1];
+        assert!(g.placed && !g.held && g.frozen_since.is_none());
+        // The whole player: the compound a save would write is the same one.
+        assert_eq!(
+            crate::lan::playerdata::compound(g),
+            crate::lan::playerdata::compound(&source.guests[i])
+        );
+        assert_eq!(g.position, [10.5, 70.0, -3.25]);
+        assert_eq!((g.xp_level, g.food, g.game_mode, g.selected), (7, 12, 1, 3));
+        // The player already there is told it has come, as for a login.
+        let told = ids(&seen);
+        assert!(told.contains(&id::SYSTEM_CHAT), "{told:?}");
+        assert!(told.contains(&id::PLAYER_INFO_UPDATE), "{told:?}");
+        // And the player is told what the import changed.
+        let sent = ids(&mine);
+        for wanted in [
+            id::GAME_EVENT,
+            id::PLAYER_ABILITIES,
+            id::SET_HELD_SLOT,
+            id::PLAYER_POSITION,
+        ] {
+            assert!(
+                sent.contains(&wanted),
+                "packet {wanted} missing from {sent:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_part_that_is_not_asked_for_keeps_what_the_held_player_has() {
+        let (record, mut hub, _seen, _mine) = held_in_a_second_hub();
+        let before = (
+            hub.guests[1].position,
+            hub.guests[1].health,
+            hub.guests[1].xp_level,
+            hub.guests[1].game_mode,
+        );
+        let request =
+            serde_json::json!({ "record": record, "parts": ["inventory", "ender_chest"] });
+        let done = import_player(&mut hub, UUID_N, &request).unwrap();
+        assert_eq!(done.parts, vec!["inventory", "ender_chest"]);
+        let g = &hub.guests[1];
+        // Only the inventory came; the position, health, experience and mode are the held player's own.
+        assert_eq!((g.position, g.health, g.xp_level, g.game_mode), before);
+        assert!(
+            g.inventory[0].is_some(),
+            "the stone came with the inventory"
+        );
+        assert_eq!(g.selected, 3);
+        assert!(
+            g.placed && !g.held,
+            "a partial import still lets the player in"
+        );
+    }
+
+    #[test]
+    fn the_parts_come_in_a_fixed_order_whatever_order_they_were_asked_in() {
+        let (record, mut hub, _seen, _mine) = held_in_a_second_hub();
+        let request = serde_json::json!({ "record": record, "parts": ["position", "inventory", "inventory"] });
+        let done = import_player(&mut hub, UUID_N, &request).unwrap();
+        assert_eq!(done.parts, vec!["inventory", "position"]);
+    }
+
+    #[test]
+    fn a_silent_import_tells_no_one() {
+        let (record, mut hub, seen, _mine) = held_in_a_second_hub();
+        let request = serde_json::json!({ "record": record, "announce": false });
+        let done = import_player(&mut hub, UUID_N, &request).unwrap();
+        assert!(!done.announce);
+        assert!(hub.guests[1].placed);
+        assert_eq!(
+            ids(&seen),
+            Vec::<i32>::new(),
+            "the watcher must hear nothing"
+        );
+    }
+
+    /// Every refusal leaves the held player exactly as it was, and tells the world nothing.
+    #[test]
+    fn a_record_that_cannot_be_taken_changes_nothing() {
+        let (record, mut hub, seen, mine) = held_in_a_second_hub();
+        let mut cases: Vec<(&str, serde_json::Value)> = Vec::new();
+        let with = |key: &str, value: serde_json::Value| {
+            let mut r = record.clone();
+            r[key] = value;
+            serde_json::json!({ "record": r })
+        };
+        cases.push(("version", with("version", serde_json::json!(2))));
+        cases.push(("no version", with("version", serde_json::Value::Null)));
+        cases.push(("data version", with("data_version", serde_json::json!(1))));
+        cases.push((
+            "another player",
+            with(
+                "uuid",
+                serde_json::json!("00000000-0000-0000-0000-000000000001"),
+            ),
+        ));
+        cases.push(("not base64", with("player", serde_json::json!("%%%"))));
+        cases.push(("not NBT", with("player", serde_json::json!("AAAA"))));
+        cases.push(("no record", serde_json::json!({})));
+        cases.push((
+            "unknown part",
+            serde_json::json!({ "record": record, "parts": ["luck"] }),
+        ));
+        cases.push((
+            "parts not a list",
+            serde_json::json!({ "record": record, "parts": "all" }),
+        ));
+        cases.push((
+            "announce not a bool",
+            serde_json::json!({ "record": record, "announce": "yes" }),
+        ));
+        let before = crate::lan::playerdata::compound(&hub.guests[1]);
+        for (what, request) in &cases {
+            let error = import_player(&mut hub, UUID_N, request).expect_err(what);
+            assert!(!error.is_empty(), "{what}");
+            let g = &hub.guests[1];
+            assert!(g.held && !g.placed, "{what}: the player must still be held");
+            assert_eq!(
+                crate::lan::playerdata::compound(g),
+                before,
+                "{what}: nothing may change"
+            );
+        }
+        assert_eq!(ids(&seen), Vec::<i32>::new());
+        assert_eq!(ids(&mine), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn a_position_in_another_dimension_is_refused_but_the_other_parts_can_come() {
+        let (record, mut hub, _seen, _mine) = held_in_a_second_hub();
+        // Make the held player's world the Nether: the record is in the Overworld.
+        hub.guests[1].dimension = "minecraft:the_nether".into();
+        let all = serde_json::json!({ "record": record });
+        let error = import_player(&mut hub, UUID_N, &all).unwrap_err();
+        assert!(error.contains("position cannot be taken"), "{error}");
+        assert!(hub.guests[1].held);
+        let without = serde_json::json!({ "record": record, "parts": ["inventory", "experience"] });
+        import_player(&mut hub, UUID_N, &without).unwrap();
+        assert_eq!(
+            hub.guests[1].dimension, "minecraft:the_nether",
+            "the client's world did not change"
+        );
+        assert_eq!(hub.guests[1].xp_level, 7);
+    }
+
+    #[test]
+    fn only_a_held_player_can_be_imported_into() {
+        let (record, mut hub, _seen, _mine) = held_in_a_second_hub();
+        let request = serde_json::json!({ "record": record });
+        // A placed player is not a target.
+        hub.guests[1].held = false;
+        hub.guests[1].placed = true;
+        let error = import_player(&mut hub, UUID_N, &request).unwrap_err();
+        assert!(
+            error.contains("no player with that unique id is held"),
+            "{error}"
+        );
+        // Nor a player nobody holds.
+        let mut empty = fresh_hub();
+        let error = import_player(&mut empty, UUID_N, &request).unwrap_err();
+        assert!(
+            error.contains("no player with that unique id is held"),
+            "{error}"
+        );
+    }
 }

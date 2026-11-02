@@ -1283,6 +1283,85 @@ impl Hub {
         self.send_inventory(i);
     }
 
+    /// Lets the held player at `i` into the world once its record has been applied: what the
+    /// import changed goes to its client the way a join tells it (game mode, abilities, held
+    /// slot, position, effects, inventory), the players already placed are listed to it again,
+    /// and it is placed. With `announce`, the others are told it has come, with the join line
+    /// and a player-list entry, exactly as a login would have. Its first tick then does what a
+    /// new player's does: health, experience, advancements. Nothing is done for a player who
+    /// is not held.
+    pub fn finish_arrival(&mut self, i: usize, announce: bool) {
+        if !self.guests[i].held || self.guests[i].placed {
+            return;
+        }
+        let (name, uuid, mode, conn) = {
+            let g = &self.guests[i];
+            (g.name.clone(), g.uuid, g.game_mode, g.conn)
+        };
+        let g = &self.guests[i];
+        g.send(&C::GameEvent(play::GameEvent {
+            event: game_event::CHANGE_GAME_MODE,
+            param: mode as f32,
+        }));
+        g.send(&g.abilities());
+        g.send(&C::SetHeldSlot(play::SetHeldSlot {
+            slot: g.selected as i32,
+        }));
+        self.resend_teleport(i, None);
+        self.send_active_effects(i);
+        self.send_inventory(i);
+        // The player list as it is now: who came while it was held is in it.
+        let permission = self.guests[i].permission;
+        let entries: Vec<_> = self
+            .guests
+            .iter()
+            .filter(|o| o.conn != conn && o.placed && self.sees(permission, o.uuid))
+            .map(|o| {
+                self.player_info(
+                    o.uuid,
+                    &o.name,
+                    o.game_mode,
+                    o.latency.load(Ordering::Relaxed),
+                )
+            })
+            .collect();
+        self.guests[i].send(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+            actions: Self::INFO_ACTIONS,
+            entries,
+        }));
+        if announce {
+            let joined = C::SystemChat(play::SystemChat {
+                content: yellow_names("multiplayer.player.joined", vec![display_name(uuid, &name)]),
+                overlay: false,
+            })
+            .encode();
+            for g in self.guests.iter().filter(|g| g.placed && g.conn != conn) {
+                if self.sees(g.permission, uuid) {
+                    g.sender.send(joined.clone());
+                }
+            }
+        }
+        let g = &mut self.guests[i];
+        g.held = false;
+        g.frozen_since = None;
+        g.placed = true;
+        g.placed_at = self.ticks;
+        // The player list entry of the newcomer, to everyone placed (itself included).
+        let newcomer = C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+            actions: Self::INFO_ACTIONS,
+            entries: vec![self.player_info(uuid, &name, mode, 0)],
+        })
+        .encode();
+        let level = self.hidden.get(&uuid).copied();
+        for g in self.guests.iter_mut().filter(|g| g.placed) {
+            if level.is_some_and(|l| g.permission < l) {
+                g.tab_hidden.insert(uuid);
+            } else if announce || g.conn == conn {
+                g.sender.send(newcomer.clone());
+            }
+        }
+    }
+
     /// `ServerPlayer.sendPostEffects`: the player's `/posteffect` chains.
     pub fn send_post_effects(&mut self, i: usize) {
         let g = &mut self.guests[i];

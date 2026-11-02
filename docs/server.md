@@ -190,6 +190,43 @@ is still in the world: a mob can still hurt it, and the record is its state at t
 refused, with `{"error": "..."}` and nothing changed, for a player who is not connected, is held, has not
 finished joining, is riding, is asleep or is dead.
 
+`player-import <uuid> <json>` applies a record to the held player, whole or in parts, and lets it into the world:
+
+```json
+{"record": { ...the record of player-export... }, "parts": ["inventory", "experience"], "announce": true}
+```
+
+`parts` is optional (all of them by default) and `announce` is optional (true by default). The parts, in the
+order the reply lists them, and what each sets:
+
+| part | sets |
+| --- | --- |
+| `inventory` | the inventory, armour, off hand and selected slot |
+| `ender_chest` | the ender chest |
+| `experience` | the level, progress, total and seed |
+| `health` | health and absorption, food and saturation, and the body's air, fire, frozen ticks, food exhaustion and timer |
+| `effects` | the active effects |
+| `game_mode` | the game mode, flight and flight speed |
+| `position` | where the player stands, how it looks, its velocity and its fall |
+| `spawn_point` | the respawn point |
+| `recipe_book` | the recipe book |
+| `advancements` | the advancements |
+
+A part that is not asked for keeps what the held player has, which is what this server loaded for it when it
+logged in: its own file, or a new player's defaults. The keys of the compound that Horizon does not model, and
+the last death, the post effects and the credits, are taken only when every part is. A record is refused, with
+`{"error": "..."}` and nothing changed, when its `version` is not 1, its `data_version` is not this server's,
+its `uuid` is not the request's, its compound is not valid base64 NBT, a part's name is unknown, or the player
+is not held. A record whose position is in another dimension than the held player's world is refused when
+`position` is among the parts: the client is in one dimension and only a login changes it.
+
+On success the reply is `{"ok": true, "parts": [...], "announced": true}`. The player is sent what the import
+changed the way a join sends it (game mode, abilities, held slot, a new position to confirm, effects, inventory
+and the player list as it now is), and is placed: it is simulated, shown to the others and takes part from the
+next tick, when its first tick sends its health, experience and advancements as a new player's does. With
+`announce` true the others are told it has come, with the join line and a player-list entry; with false they
+are not told and have no list entry for it.
+
 **The headless engine** comes after perf-ticks-2's work lands: Resources split into shared and per-game, the
 game built in `Game::new`, the integrated server on its own thread. On that base:
 
