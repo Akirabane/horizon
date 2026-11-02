@@ -967,6 +967,18 @@ impl Hub {
             })
             .map(|g| g.conn)
             .collect();
+        for g in &mut self.guests {
+            if g.frozen_since
+                .is_some_and(|since| super::arrivals::frozen_too_long(since, self.ticks))
+            {
+                g.frozen_since = None;
+                events.push(HostEvent::Warn(format!(
+                    "{} was frozen for a hand-over for {} ticks and nothing finished it: let go",
+                    g.name,
+                    super::arrivals::FROZEN_MAX_TICKS
+                )));
+            }
+        }
         for conn in stale {
             if let Some(g) = self.guest(conn) {
                 events.push(HostEvent::Warn(format!(
@@ -1809,6 +1821,10 @@ impl Hub {
         let mut events = Vec::new();
         for i in 0..self.guests.len() {
             if self.here(&self.guests[i]) {
+                if self.guests[i].frozen_since.is_some() {
+                    // Frozen for a hand-over: it answers the server and nothing more.
+                    self.keep_acknowledgements(i);
+                }
                 self.process_inbox(i, ctx, &mut events);
                 self.tick_floating(i, &mut events);
             } else if self.guests[i].held && self.watches(&self.guests[i]) {

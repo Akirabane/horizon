@@ -88,6 +88,88 @@ impl Expectations {
     }
 }
 
+/// Server ticks a player may stay frozen for a hand-over (ten seconds): a proxy
+/// that dies in the middle of one must not leave the player stuck.
+pub const FROZEN_MAX_TICKS: u64 = 20 * 10;
+/// The version of the record `player-export` answers with.
+pub const RECORD_VERSION: i64 = 1;
+
+/// Whether a player frozen at tick `since` has been frozen too long at tick `now`.
+pub fn frozen_too_long(since: u64, now: u64) -> bool {
+    now.saturating_sub(since) >= FROZEN_MAX_TICKS
+}
+
+/// Why the connected player `uuid` cannot be exported now, or the index of its
+/// guest. A held player is not exportable: it has no state of its own yet.
+pub fn check_exportable(hub: &Hub, uuid: u128) -> Result<usize, &'static str> {
+    let Some(i) = hub.guests.iter().position(|g| g.uuid == uuid) else {
+        return Err("that player is not connected to this server");
+    };
+    let g = &hub.guests[i];
+    if g.held {
+        Err("that player is held: it has not been handed over yet")
+    } else if !g.placed {
+        Err("that player has not finished joining")
+    } else if g.vehicle.is_some() {
+        Err("that player is riding")
+    } else if g.sleeping {
+        Err("that player is asleep")
+    } else if g.dead {
+        Err("that player is dead")
+    } else {
+        Ok(i)
+    }
+}
+
+/// The record of the player at guest index `i` (which [`check_exportable`] gave,
+/// with its menus closed): the player compound as the server saves it, as the
+/// uncompressed NBT of the compound in base64, and the few values a proxy reads
+/// without opening it. `advancements` is the JSON the server keeps for the
+/// player, or null. With `freeze`, the player's own inputs stop being acted on
+/// until it is released, aborted or too old.
+pub fn export_record(
+    hub: &mut Hub,
+    i: usize,
+    freeze: bool,
+    advancements: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use horizon_world::nbt::{Limits, NamedTag, write_named};
+    let g = &hub.guests[i];
+    let tag = super::playerdata::compound(g);
+    let bytes = write_named(
+        &NamedTag {
+            name: "".into(),
+            tag,
+        },
+        Limits::saved(),
+    )
+    .map_err(|e| e.to_string())?;
+    let velocity = g
+        .motion
+        .as_ref()
+        .map(|m| [m.velocity.x, m.velocity.y, m.velocity.z])
+        .or_else(|| g.loaded_body.map(|b| b.velocity))
+        .unwrap_or([0.0; 3]);
+    let record = serde_json::json!({
+        "version": RECORD_VERSION,
+        "data_version": horizon_world::DATA_VERSION,
+        "uuid": horizon_protocol::crypto::uuid_string(g.uuid),
+        "name": g.name,
+        "dimension": g.dimension,
+        "position": g.position,
+        "rotation": [g.yaw, g.pitch],
+        "velocity": velocity,
+        "game_mode": g.game_mode,
+        "player": super::base64(&bytes),
+        "advancements": advancements,
+    });
+    if freeze {
+        let since = hub.ticks;
+        hub.guests[i].frozen_since = Some(since);
+    }
+    Ok(record)
+}
+
 /// A unique id as text, with or without dashes.
 pub fn parse_uuid(text: &str) -> Option<u128> {
     let plain: String = text.chars().filter(|c| *c != '-').collect();
@@ -824,5 +906,213 @@ mod hub_tests {
             rx.try_recv().is_err(),
             "a placed player must not be disconnected"
         );
+    }
+
+    /// The keys a vanilla server writes in every player's file, read with `javap` from the
+    /// 26.3 server jar: `Player.addAdditionalSaveData` (Inventory, SelectedItemSlot,
+    /// EnderItems, XpLevel, XpP, XpTotal, XpSeed, abilities), `FoodData` (foodLevel,
+    /// foodSaturationLevel, foodExhaustionLevel, foodTickTimer), `ServerPlayer` (Dimension),
+    /// `Entity.saveWithoutId` (Pos, Motion, Rotation, OnGround, Air, Fire) and
+    /// `LivingEntity` (Health, AbsorptionAmount).
+    const VANILLA_PLAYER_KEYS: [&str; 21] = [
+        "Inventory",
+        "SelectedItemSlot",
+        "EnderItems",
+        "XpLevel",
+        "XpP",
+        "XpTotal",
+        "XpSeed",
+        "abilities",
+        "foodLevel",
+        "foodSaturationLevel",
+        "foodExhaustionLevel",
+        "foodTickTimer",
+        "Dimension",
+        "Pos",
+        "Motion",
+        "Rotation",
+        "OnGround",
+        "Air",
+        "Fire",
+        "Health",
+        "AbsorptionAmount",
+    ];
+
+    /// A guest standing at a known place with known values.
+    fn exported_guest() -> (Hub, usize) {
+        use crate::items::ItemStack;
+        let mut hub = hub();
+        let (mut g, _rx) = guest(5, UUID_N, "Alex");
+        g.placed = true;
+        g.position = [10.5, 70.0, -3.25];
+        g.yaw = 90.0;
+        g.pitch = 15.0;
+        g.health = 14.0;
+        g.food = 12;
+        g.xp_level = 7;
+        g.game_mode = 1;
+        g.selected = 3;
+        g.inventory[0] = Some(ItemStack {
+            item: std::sync::Arc::from("minecraft:stone"),
+            count: 5,
+            damage: 0,
+            extra: None,
+        });
+        hub.guests.push(g);
+        (hub, 0)
+    }
+
+    /// Decodes the compound of a record back into its tag.
+    fn compound_of(record: &serde_json::Value) -> horizon_world::nbt::Tag {
+        use horizon_world::nbt::{Limits, read_named};
+        let bytes = crate::skins::base64_decode(record["player"].as_str().unwrap()).unwrap();
+        read_named(&bytes, Limits::saved()).unwrap().0.tag
+    }
+
+    #[test]
+    fn a_player_who_cannot_be_exported_is_refused_with_the_reason() {
+        let mut hub = hub();
+        let expect = |hub: &Hub| super::check_exportable(hub, UUID_N);
+        assert_eq!(
+            expect(&hub),
+            Err("that player is not connected to this server")
+        );
+        let (g, _rx) = guest(5, UUID_N, "Alex");
+        hub.guests.push(g);
+        assert_eq!(expect(&hub), Err("that player has not finished joining"));
+        hub.guests[0].placed = true;
+        assert_eq!(expect(&hub), Ok(0));
+        hub.guests[0].vehicle = Some(77);
+        assert_eq!(expect(&hub), Err("that player is riding"));
+        hub.guests[0].vehicle = None;
+        hub.guests[0].sleeping = true;
+        assert_eq!(expect(&hub), Err("that player is asleep"));
+        hub.guests[0].sleeping = false;
+        hub.guests[0].dead = true;
+        assert_eq!(expect(&hub), Err("that player is dead"));
+        hub.guests[0].dead = false;
+        hub.guests[0].placed = false;
+        hub.guests[0].held = true;
+        assert_eq!(
+            expect(&hub),
+            Err("that player is held: it has not been handed over yet")
+        );
+    }
+
+    #[test]
+    fn the_record_carries_what_a_proxy_reads_and_the_vanilla_player_compound() {
+        use crate::save::{float, number};
+        let (mut hub, i) = exported_guest();
+        let record =
+            super::export_record(&mut hub, i, false, serde_json::json!({"done": []})).unwrap();
+        assert_eq!(record["version"], 1);
+        assert_eq!(record["data_version"], horizon_world::DATA_VERSION);
+        assert_eq!(record["uuid"], UUID);
+        assert_eq!(record["name"], "Alex");
+        assert_eq!(record["dimension"], "minecraft:overworld");
+        assert_eq!(record["position"], serde_json::json!([10.5, 70.0, -3.25]));
+        assert_eq!(record["rotation"], serde_json::json!([90.0, 15.0]));
+        assert_eq!(record["game_mode"], 1);
+        assert_eq!(record["advancements"], serde_json::json!({"done": []}));
+        assert_eq!(hub.guests[i].frozen_since, None, "no freeze was asked for");
+
+        let tag = compound_of(&record);
+        for key in VANILLA_PLAYER_KEYS {
+            assert!(tag.get(key).is_some(), "the compound has no {key}");
+        }
+        assert_eq!(number(tag.get("XpLevel")), Some(7));
+        assert_eq!(number(tag.get("foodLevel")), Some(12));
+        assert_eq!(number(tag.get("SelectedItemSlot")), Some(3));
+        assert_eq!(float(tag.get("Health")), Some(14.0));
+        let horizon_world::nbt::Tag::String(dimension) = tag.get("Dimension").unwrap() else {
+            panic!("Dimension is not a string");
+        };
+        assert_eq!(dimension.to_string_lossy(), "minecraft:overworld");
+        // The stone in the first slot, as vanilla writes a stack: Slot, id, count.
+        let horizon_world::nbt::Tag::List(items) = tag.get("Inventory").unwrap() else {
+            panic!("Inventory is not a list");
+        };
+        let first = &items[0];
+        assert_eq!(number(first.get("Slot")), Some(0));
+        assert_eq!(number(first.get("count")), Some(5));
+    }
+
+    /// The values a connected player has now and an old file does not: the ones the
+    /// save-gaps work added reach the record.
+    #[test]
+    fn the_record_has_the_live_values_of_the_body() {
+        use crate::save::{float, number};
+        let (mut hub, i) = exported_guest();
+        hub.guests[i].loaded_body = Some(crate::lan::guest::SavedBody {
+            fire_ticks: -20,
+            air: 300,
+            fall_distance: 0.0,
+            velocity: [0.125, -0.5, 0.25],
+            food_exhaustion: 2.5,
+            food_tick_timer: 33,
+            ticks_frozen: 40,
+        });
+        let record = super::export_record(&mut hub, i, false, serde_json::Value::Null).unwrap();
+        assert_eq!(record["velocity"], serde_json::json!([0.125, -0.5, 0.25]));
+        assert_eq!(record["advancements"], serde_json::Value::Null);
+        let tag = compound_of(&record);
+        assert_eq!(float(tag.get("foodExhaustionLevel")), Some(2.5));
+        assert_eq!(number(tag.get("foodTickTimer")), Some(33));
+        assert_eq!(number(tag.get("TicksFrozen")), Some(40));
+    }
+
+    /// A frozen player's inputs are not acted on, its acknowledgements are, and a freeze
+    /// nobody finishes is let go.
+    #[test]
+    fn a_frozen_player_is_inert_until_it_is_let_go() {
+        use horizon_protocol::packets::play::{ChunkBatchReceived, MovePlayerPos, Serverbound};
+        let (mut hub, i) = exported_guest();
+        super::export_record(&mut hub, i, true, serde_json::Value::Null).unwrap();
+        assert_eq!(hub.guests[i].frozen_since, Some(hub.ticks));
+        let before = hub.guests[i].position;
+        let g = &mut hub.guests[i];
+        g.unacknowledged = 2;
+        g.inbox.push_back((
+            Serverbound::MovePlayerPos(MovePlayerPos {
+                x: before[0] + 30.0,
+                y: before[1],
+                z: before[2],
+                flags: 1,
+            }),
+            10,
+        ));
+        g.inbox.push_back((
+            Serverbound::ChunkBatchReceived(ChunkBatchReceived {
+                chunks_per_tick: 9.0,
+            }),
+            5,
+        ));
+        g.inbox_bytes = 15;
+        let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
+        let border = crate::worldborder::WorldBorder::default();
+        let mut next = 100;
+        let mut ctx = tick_context(&mut world, &border, &mut next);
+        hub.drain_packets(&mut ctx);
+        assert_eq!(
+            hub.guests[i].position, before,
+            "a frozen player does not move"
+        );
+        assert_eq!(
+            hub.guests[i].unacknowledged, 1,
+            "its acknowledgement was handled"
+        );
+        // Nobody finishes the hand-over: ten seconds of ticks later it is let go.
+        hub.ticks = hub.guests[i].frozen_since.unwrap() + super::FROZEN_MAX_TICKS - 2;
+        assert!(!hub.poll(&mut ctx).iter().any(|e| is_warn(e, "frozen")));
+        assert!(hub.guests[i].frozen_since.is_some());
+        assert!(hub.poll(&mut ctx).iter().any(|e| is_warn(e, "frozen")));
+        assert_eq!(hub.guests[i].frozen_since, None);
+    }
+
+    #[test]
+    fn the_freeze_lasts_ten_seconds_of_ticks() {
+        assert!(!super::frozen_too_long(10, 10 + 199));
+        assert!(super::frozen_too_long(10, 10 + 200));
+        assert!(!super::frozen_too_long(500, 100));
     }
 }

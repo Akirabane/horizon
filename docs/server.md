@@ -156,6 +156,40 @@ the log when the expectation runs out, and a held player nobody takes over is dr
 The requests are `lan/arrivals.rs`'s; the answers are one JSON line, `{"ok": true, ...}` or
 `{"error": "..."}`.
 
+`player-export <uuid> [freeze]` reads a connected player out of the server. A unique id is written as 32
+hexadecimal digits with or without dashes in a request, and as lowercase text with dashes in an answer
+(`123e4567-e89b-12d3-a456-426614174000`). The request closes the player's open menu as vanilla does when a menu
+closes (the cursor stack and the crafting grids go back into the inventory; the client is told to close it and
+is sent its inventory), then answers:
+
+```json
+{"ok": true, "record": {
+  "version": 1,
+  "data_version": 5023,
+  "uuid": "123e4567-e89b-12d3-a456-426614174000",
+  "name": "Alex",
+  "dimension": "minecraft:overworld",
+  "position": [10.5, 70.0, -3.25],
+  "rotation": [90.0, 15.0],
+  "velocity": [0.0, 0.0, 0.0],
+  "game_mode": 0,
+  "player": "<base64>",
+  "advancements": { }
+}}
+```
+
+`player` is the base64 of the uncompressed named NBT (root name empty) of the player compound, exactly what
+the server writes to `players/data/<uuid>.dat` before it gzips it, with every live value the server keeps
+(position, motion, health, food and its exhaustion and timer, experience, effects, inventory, ender chest,
+abilities, game mode and the one before, frozen ticks, spawn point). `advancements` is the JSON the server keeps
+in `advancements/<uuid>.json`, or null on a server with no advancements. `version` is the version of this
+record (1); `data_version` is the world data version of the server that made it (5023 for 26.3), which an
+import checks. With `freeze`, the player's own inputs (moves, clicks, commands) stop being acted on until the
+hand-over ends; a freeze nothing ends is let go after ten seconds, with a warning in the log. A frozen player
+is still in the world: a mob can still hurt it, and the record is its state at the export. The request is
+refused, with `{"error": "..."}` and nothing changed, for a player who is not connected, is held, has not
+finished joining, is riding, is asleep or is dead.
+
 **The headless engine** comes after perf-ticks-2's work lands: Resources split into shared and per-game, the
 game built in `Game::new`, the integrated server on its own thread. On that base:
 

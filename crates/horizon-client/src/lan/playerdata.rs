@@ -201,6 +201,17 @@ pub fn apply(guest: &mut Guest, level: &Level) {
     }
 }
 
+/// A guest's player compound as [`save`] would write it, without writing it:
+/// the whole state of a connected player at this moment.
+pub fn compound(guest: &Guest) -> Tag {
+    let mut level = Level {
+        player_uuid: Some(uuid_ints(guest.uuid)),
+        ..Level::default()
+    };
+    store(guest, &mut level, None);
+    level.player_tag()
+}
+
 /// Save a guest (PlayerDataStorage.save) who has left: the vehicle it took
 /// along is in its `saved` compound already (`take_parent_vehicle`).
 pub fn save(guest: &Guest, world: &Path) {

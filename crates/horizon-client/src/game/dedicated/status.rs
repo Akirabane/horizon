@@ -58,6 +58,7 @@ impl Game<'_> {
                     ),
                     None => json!({ "error": "the server is not open to players" }),
                 },
+                Some(("player-export", rest)) => self.player_export(rest),
                 Some(("player-drop", rest)) => match self.lan.as_mut() {
                     Some(host) => horizon_client::lan::arrivals::drop_request(&mut host.hub, rest),
                     None => json!({ "error": "the server is not open to players" }),

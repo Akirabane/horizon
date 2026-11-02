@@ -335,6 +335,10 @@ pub struct Guest {
     pub held: bool,
     /// The hub tick at which it was held, to drop it if its hand-over never comes.
     pub held_since: u64,
+    /// The hub tick at which a proxy froze it for a hand-over (`player-export`):
+    /// what it sends, other than its acknowledgements, is not acted on, until the
+    /// hand-over is over, aborted or too old.
+    pub frozen_since: Option<u64>,
     /// Root command names the mods took out of this player's command tree
     /// (`native_player_commands_sent`); their tree is sent without them.
     pub hidden_commands: Vec<String>,
@@ -504,6 +508,7 @@ impl Guest {
             placed: false,
             held: false,
             held_since: 0,
+            frozen_since: None,
             hidden_commands: Vec::new(),
             flying_speed: 0.05,
             dimension: "minecraft:overworld".into(),
