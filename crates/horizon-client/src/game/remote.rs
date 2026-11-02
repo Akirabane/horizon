@@ -7445,6 +7445,16 @@ impl Game<'_> {
                 && (self.may_build()
                     || self.with_hand(hand, |g| g.can_place_on_in_adventure(hit.pos)));
         }
+        // SpawnEggItem.useOn: SUCCESS on a client level (only the server spawns), so neither
+        // UseItem nor the off hand follows. Without it the click went on to SpawnEggItem.use,
+        // whose SOURCE_ONLY ray finds the water at a swimmer's head: a second mob. It passes in
+        // adventure mode off its can_place_on (ItemStack.useOn), and the server alone refuses a
+        // mob that cannot spawn (FAIL, no swing).
+        if stack.item.ends_with("_spawn_egg") {
+            return self.spawn_egg_allowed(&stack.item)
+                && (self.may_build()
+                    || self.with_hand(hand, |g| g.can_place_on_in_adventure(hit.pos)));
+        }
         let at = [
             f64::from(hit.pos[0]) + 0.5,
             f64::from(hit.pos[1]) + 0.5,
