@@ -972,6 +972,7 @@ impl Hub {
                 .is_some_and(|since| super::arrivals::frozen_too_long(since, self.ticks))
             {
                 g.frozen_since = None;
+                g.freeze_expired = true;
                 events.push(HostEvent::Warn(format!(
                     "{} was frozen for a hand-over for {} ticks and nothing finished it: let go",
                     g.name,
@@ -2123,14 +2124,16 @@ impl Hub {
     /// server: the others see it go (its entity and its player-list entry), but nothing is
     /// saved (the other server has the player now) and, unless `announce`, the "left the game"
     /// line is not sent. The game is told it left, marked released, so it saves nothing.
-    pub fn release_moved(&mut self, uuid: u128, announce: bool) -> Result<(), &'static str> {
-        let Some(i) = self
-            .guests
-            .iter()
-            .position(|g| g.uuid == uuid && g.placed && g.frozen_since.is_some())
-        else {
+    ///
+    /// A freeze that ran out before the release came does not refuse it: a proxy that was a little
+    /// late still removes the player. Returns whether the player was still frozen.
+    pub fn release_moved(&mut self, uuid: u128, announce: bool) -> Result<bool, &'static str> {
+        let Some(i) = self.guests.iter().position(|g| {
+            g.uuid == uuid && g.placed && (g.frozen_since.is_some() || g.freeze_expired)
+        }) else {
             return Err("that player is not frozen for a hand-over");
         };
+        let was_frozen = self.guests[i].frozen_since.is_some();
         let g = &mut self.guests[i];
         g.quiet_leave = !announce;
         g.left_reason = "moved to another server".to_owned();
@@ -2139,8 +2142,9 @@ impl Hub {
         let mut gone = self.remove_guest(i, "moved to another server");
         gone.released = true;
         gone.frozen_since = None;
+        gone.freeze_expired = false;
         self.pending_kicks.push(HostEvent::Left(Box::new(gone)));
-        Ok(())
+        Ok(was_frozen)
     }
 
     /// `ServerTickRateManager.updateStepTicks` / `updateStateToClients`:

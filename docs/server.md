@@ -185,7 +185,7 @@ abilities, game mode and the one before, frozen ticks, spawn point). `advancemen
 in `advancements/<uuid>.json`, or null on a server with no advancements. `version` is the version of this
 record (1); `data_version` is the world data version of the server that made it (5023 for 26.3), which an
 import checks. With `freeze`, the player's own inputs (moves, clicks, commands) stop being acted on until the
-hand-over ends; a freeze nothing ends is let go after ten seconds, with a warning in the log. A frozen player
+hand-over ends; a freeze nothing ends is let go after thirty seconds (600 ticks), with a warning in the log. A frozen player
 is still in the world: a mob can still hurt it, and the record is its state at the export. The request is
 refused, with `{"error": "..."}` and nothing changed, for a player who is not connected, is held, has not
 finished joining, is riding, is asleep or is dead.
@@ -262,9 +262,12 @@ other server has the player), the log and the `leave` event record the departure
 `moved to another server`, and the player's connection is closed with a generic disconnect. The "left the game"
 line is not sent unless `announce` is added. Nothing is deleted: the player's file here stays as it was, and a
 server that a proxy is the only way to reach never reads it without the proxy. `abort` lifts the freeze and the
-player goes on as if nothing had happened. Both reply `{"ok": true, "released": "moved"}` (with `"announced"`) or
-`{"ok": true, "released": "abort"}`, and are refused with `{"error": "..."}` for a player who is not frozen. A
-freeze nobody ends is let go after ten seconds.
+player goes on as if nothing had happened. `moved` replies `{"ok": true, "released": "moved", "announced": false, "was_frozen": true}` and `abort` replies
+`{"ok": true, "released": "abort"}`; both are refused with `{"error": "..."}` for a player who is not frozen. A freeze that ran out
+before the release (thirty seconds) does not refuse `moved`: the player is removed all the same and the reply says
+`"was_frozen": false`, so a proxy that finished a little late still removes the player; `abort` after the freeze
+ran out is refused, since the player was let go already. A
+freeze nobody ends is let go after thirty seconds.
 
 **The headless engine** comes after perf-ticks-2's work lands: Resources split into shared and per-game, the
 game built in `Game::new`, the integrated server on its own thread. On that base:

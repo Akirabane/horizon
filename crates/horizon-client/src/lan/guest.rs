@@ -341,6 +341,10 @@ pub struct Guest {
     pub frozen_since: Option<u64>,
     /// Leaving for another server (`player-release moved`) without the "left the game" line.
     pub quiet_leave: bool,
+    /// Its freeze for a hand-over ran out before anyone ended it: `player-release moved` is still
+    /// taken (and says `"was_frozen": false`), since a proxy that finished its hand-over a little
+    /// late must still be able to remove the player.
+    pub freeze_expired: bool,
     /// Taken out of the world because a proxy moved it to another server: the game neither
     /// saves its player file nor its records, since the other server has the player now.
     pub released: bool,
@@ -520,6 +524,7 @@ impl Guest {
             held_since: 0,
             frozen_since: None,
             quiet_leave: false,
+            freeze_expired: false,
             released: false,
             imported: false,
             arrival_announce: true,

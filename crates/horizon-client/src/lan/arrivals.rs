@@ -88,9 +88,9 @@ impl Expectations {
     }
 }
 
-/// Server ticks a player may stay frozen for a hand-over (ten seconds): a proxy
+/// Server ticks a player may stay frozen for a hand-over (thirty seconds): a proxy
 /// that dies in the middle of one must not leave the player stuck.
-pub const FROZEN_MAX_TICKS: u64 = 20 * 10;
+pub const FROZEN_MAX_TICKS: u64 = 20 * 30;
 /// The version of the record `player-export` answers with.
 pub const RECORD_VERSION: i64 = 1;
 
@@ -166,6 +166,7 @@ pub fn export_record(
     if freeze {
         let since = hub.ticks;
         hub.guests[i].frozen_since = Some(since);
+        hub.guests[i].freeze_expired = false;
     }
     Ok(record)
 }
@@ -355,7 +356,12 @@ pub fn release_request(hub: &mut Hub, args: &str) -> serde_json::Value {
     }
     if how == Some("moved") {
         return match hub.release_moved(uuid, announce) {
-            Ok(()) => serde_json::json!({ "ok": true, "released": "moved", "announced": announce }),
+            Ok(was_frozen) => serde_json::json!({
+                "ok": true,
+                "released": "moved",
+                "announced": announce,
+                "was_frozen": was_frozen,
+            }),
             Err(why) => error(why),
         };
     }
@@ -366,6 +372,7 @@ pub fn release_request(hub: &mut Hub, args: &str) -> serde_json::Value {
     {
         Some(g) => {
             g.frozen_since = None;
+            g.freeze_expired = false;
             serde_json::json!({ "ok": true, "released": "abort" })
         }
         None => error("that player is not frozen for a hand-over"),
@@ -1245,7 +1252,7 @@ mod hub_tests {
             hub.guests[i].unacknowledged, 1,
             "its acknowledgement was handled"
         );
-        // Nobody finishes the hand-over: ten seconds of ticks later it is let go.
+        // Nobody finishes the hand-over: thirty seconds of ticks later it is let go.
         hub.ticks = hub.guests[i].frozen_since.unwrap() + super::FROZEN_MAX_TICKS - 2;
         assert!(!hub.poll(&mut ctx).iter().any(|e| is_warn(e, "frozen")));
         assert!(hub.guests[i].frozen_since.is_some());
@@ -1254,9 +1261,9 @@ mod hub_tests {
     }
 
     #[test]
-    fn the_freeze_lasts_ten_seconds_of_ticks() {
-        assert!(!super::frozen_too_long(10, 10 + 199));
-        assert!(super::frozen_too_long(10, 10 + 200));
+    fn the_freeze_lasts_thirty_seconds_of_ticks() {
+        assert!(!super::frozen_too_long(10, 10 + 599));
+        assert!(super::frozen_too_long(10, 10 + 600));
         assert!(!super::frozen_too_long(500, 100));
     }
 
@@ -1497,7 +1504,7 @@ mod hub_tests {
         let reply = super::release_request(&mut hub, &format!("{UUID} moved"));
         assert_eq!(
             reply,
-            serde_json::json!({"ok": true, "released": "moved", "announced": false})
+            serde_json::json!({"ok": true, "released": "moved", "announced": false, "was_frozen": true})
         );
         assert_eq!(hub.guests.len(), 1, "the mover is out of the hub");
         let told = ids(&seen);
@@ -1954,5 +1961,67 @@ mod hub_tests {
             import_player(&mut hub, UUID_N, &serde_json::json!({ "record": record })).unwrap();
         assert!(done.placed && done.recentered);
         assert!(ids(&mine).contains(&id::SET_CHUNK_CACHE_CENTER));
+    }
+
+    // ---- a freeze that ran out before the release ----------------------------
+
+    #[test]
+    fn a_release_that_comes_after_the_freeze_ran_out_is_still_taken_and_says_so() {
+        let (mut hub, seen, mine) = frozen_with_a_watcher();
+        let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
+        let border = crate::worldborder::WorldBorder::default();
+        let mut next = 100;
+        let mut ctx = tick_context(&mut world, &border, &mut next);
+        // The freeze runs out: the player is let go, with a warning.
+        hub.ticks = hub.guests[1].frozen_since.unwrap() + super::FROZEN_MAX_TICKS;
+        let events = hub.poll(&mut ctx);
+        assert!(events.iter().any(|e| is_warn(e, "frozen")));
+        assert!(hub.guests[1].frozen_since.is_none() && hub.guests[1].freeze_expired);
+        // The proxy was late: the release still removes the player, and the answer says the
+        // player had been let go already.
+        let reply = super::release_request(&mut hub, &format!("{UUID} moved"));
+        assert_eq!(
+            reply,
+            serde_json::json!({"ok": true, "released": "moved", "announced": false, "was_frozen": false})
+        );
+        assert_eq!(hub.guests.len(), 1, "the player is out of the hub");
+        let told = ids(&seen);
+        assert!(
+            told.contains(&id::PLAYER_INFO_REMOVE) && !told.contains(&id::SYSTEM_CHAT),
+            "{told:?}"
+        );
+        assert!(matches!(mine.try_recv(), Ok(Out::Disconnect(_))));
+        let left = left_events(&mut hub);
+        assert!(left.len() == 1 && left[0].released && !left[0].freeze_expired);
+    }
+
+    /// The tolerance is for a freeze that ran out, not for any player.
+    #[test]
+    fn a_player_who_was_never_frozen_is_still_refused_after_the_change() {
+        let (mut hub, seen, _mine) = frozen_with_a_watcher();
+        hub.guests[1].frozen_since = None;
+        let reply = super::release_request(&mut hub, &format!("{UUID} moved"));
+        assert!(
+            reply["error"].as_str().unwrap().contains("not frozen"),
+            "{reply}"
+        );
+        assert_eq!(hub.guests.len(), 2);
+        assert_eq!(ids(&seen), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn freezing_again_forgets_that_a_freeze_ran_out() {
+        let (mut hub, _seen, _mine) = frozen_with_a_watcher();
+        hub.guests[1].frozen_since = None;
+        hub.guests[1].freeze_expired = true;
+        super::export_record(&mut hub, 1, true, serde_json::Value::Null).unwrap();
+        assert!(hub.guests[1].frozen_since.is_some() && !hub.guests[1].freeze_expired);
+        // An abort ends it for good.
+        assert_eq!(
+            super::release_request(&mut hub, &format!("{UUID} abort"))["ok"],
+            true
+        );
+        assert!(!hub.guests[1].freeze_expired);
+        assert!(super::release_request(&mut hub, &format!("{UUID} moved"))["error"].is_string());
     }
 }
