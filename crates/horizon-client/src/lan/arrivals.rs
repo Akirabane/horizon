@@ -1369,7 +1369,7 @@ mod hub_tests {
         (hub, seen, mine)
     }
 
-    fn left_events(hub: &mut Hub) -> Vec<Box<Guest>> {
+    fn left_events(hub: &mut Hub) -> Vec<Guest> {
         let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
         let border = crate::worldborder::WorldBorder::default();
         let mut next = 100;
@@ -1377,7 +1377,7 @@ mod hub_tests {
         hub.poll(&mut ctx)
             .into_iter()
             .filter_map(|e| match e {
-                crate::lan::hub::HostEvent::Left(g) => Some(g),
+                crate::lan::hub::HostEvent::Left(g) => Some(*g),
                 _ => None,
             })
             .collect()
