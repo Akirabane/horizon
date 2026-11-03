@@ -8,7 +8,10 @@ use crate::{
     packets::configuration::{RegistryData, UpdateTags},
 };
 use horizon_world::nbt::{JavaString, Tag};
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 /// One registry: names by network id and the reverse lookup.
 #[derive(Clone, Debug, Default)]
@@ -115,12 +118,33 @@ pub struct Dynamic {
     pub registries: HashMap<String, Vec<(String, Option<Tag>)>>,
     /// The `minecraft:dialog` tags the server sent: each tag's entries by id.
     pub dialog_tags: HashMap<String, Vec<i32>>,
+    /// Registry tags received from the server, with entries still in network-ID order.
+    pub tags: HashMap<String, HashMap<String, Vec<i32>>>,
     /// The peer confirmed the native component registry identity.
     pub custom_components: bool,
 }
 impl Dynamic {
-    /// The dialog tags of a `ClientboundUpdateTagsPacket`.
+    /// Replace tags for each registry supplied by `ClientboundUpdateTagsPacket`.
+    /// An explicitly empty registry clears its tags; omitted registries are unchanged.
     pub fn add_tags(&mut self, packet: &UpdateTags) {
+        self.replace_tags(packet);
+    }
+    /// Replace synchronized tags, returning whether block, item or entity-type memberships
+    /// changed (shader ID inputs).
+    pub fn replace_tags(&mut self, packet: &UpdateTags) -> bool {
+        let mut changed = false;
+        for r in &packet.registries {
+            let tags = r
+                .tags
+                .iter()
+                .map(|t| (t.name.clone(), t.ids.clone()))
+                .collect();
+            changed |= matches!(
+                r.registry.as_str(),
+                "minecraft:block" | "minecraft:item" | "minecraft:entity_type"
+            ) && self.tags.get(&r.registry) != Some(&tags);
+            self.tags.insert(r.registry.clone(), tags);
+        }
         for r in packet
             .registries
             .iter()
@@ -132,6 +156,30 @@ impl Dynamic {
                 .map(|t| (t.name.clone(), t.ids.clone()))
                 .collect();
         }
+        changed
+    }
+    /// Resolve synchronized tag members through the connection's built-in registry.
+    /// `None` means no tag packet for this registry, unlike an explicitly empty map.
+    pub fn named_tags(
+        &self,
+        builtin: &Builtin,
+        registry: &str,
+    ) -> Option<HashMap<String, HashSet<String>>> {
+        let tags = self.tags.get(registry)?;
+        let names = builtin.get(registry);
+        Some(
+            tags.iter()
+                .map(|(tag, ids)| {
+                    let members = ids
+                        .iter()
+                        .filter_map(|id| names.and_then(|n| n.name(*id)))
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_owned)
+                        .collect();
+                    (tag.clone(), members)
+                })
+                .collect(),
+        )
     }
     pub fn add(&mut self, packet: RegistryData) {
         let entries = packet.entries.into_iter().map(|e| (e.id, e.data)).collect();
@@ -253,6 +301,69 @@ mod tests {
         assert_eq!(items.name(1), Some("minecraft:stone"));
         assert_eq!(items.id("minecraft:air"), Some(0));
         assert_eq!(items.name(2), None);
+    }
+
+    #[test]
+    fn synchronized_tags_resolve_and_replace_each_supplied_registry() {
+        use crate::packets::configuration::{RegistryTags, TagEntry};
+        let builtin = Builtin {
+            registries: HashMap::from([
+                (
+                    "minecraft:block".into(),
+                    Ids::from_names(vec!["minecraft:oak_log".into(), "test:log".into()]),
+                ),
+                (
+                    "minecraft:item".into(),
+                    Ids::from_names(vec!["test:axe".into()]),
+                ),
+            ]),
+        };
+        let mut dynamic = Dynamic::default();
+        assert!(dynamic.named_tags(&builtin, "minecraft:block").is_none());
+        let packet = |registry: &str, ids: Vec<i32>| UpdateTags {
+            registries: vec![RegistryTags {
+                registry: registry.into(),
+                tags: vec![TagEntry {
+                    name: "test:group".into(),
+                    ids,
+                }],
+            }],
+        };
+        assert!(dynamic.replace_tags(&packet("minecraft:block", vec![1, -1, 40])));
+        assert!(!dynamic.replace_tags(&packet("minecraft:block", vec![1, -1, 40])));
+        dynamic.replace_tags(&packet("minecraft:item", vec![0]));
+        assert_eq!(
+            dynamic.named_tags(&builtin, "minecraft:block").unwrap()["test:group"],
+            HashSet::from(["test:log".into()])
+        );
+        dynamic.replace_tags(&packet("minecraft:block", vec![0]));
+        assert_eq!(
+            dynamic.named_tags(&builtin, "minecraft:block").unwrap()["test:group"],
+            HashSet::from(["minecraft:oak_log".into()])
+        );
+        assert_eq!(
+            dynamic.named_tags(&builtin, "minecraft:item").unwrap()["test:group"],
+            HashSet::from(["test:axe".into()])
+        );
+        dynamic.replace_tags(&UpdateTags {
+            registries: vec![RegistryTags {
+                registry: "minecraft:block".into(),
+                tags: vec![],
+            }],
+        });
+        assert!(
+            dynamic
+                .named_tags(&builtin, "minecraft:block")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!dynamic.replace_tags(&packet("test:unknown_registry", vec![0])));
+        assert!(
+            dynamic
+                .named_tags(&builtin, "test:unknown_registry")
+                .unwrap()["test:group"]
+                .is_empty()
+        );
     }
 
     #[test]

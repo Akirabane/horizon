@@ -379,6 +379,8 @@ pub struct Items {
     /// Block tag name (without '#') -> member block names.
     pub block_tags: HashMap<String, HashSet<String>>,
     pub item_tags: HashMap<String, HashSet<String>>,
+    /// Entity type tags, used by shader entity ID assignments.
+    pub entity_tags: HashMap<String, HashSet<String>>,
     /// Item tags in vanilla's order (`TagLoader`: file order, nested tags in
     /// place, first occurrence kept), the order `TagSlotDisplay` resolves.
     pub item_tag_order: HashMap<String, Vec<String>>,
@@ -904,6 +906,7 @@ impl Items {
             registry_order,
             block_tags: load_tags(root, "block", overlay)?,
             item_tags: load_tags(root, "item", overlay)?,
+            entity_tags,
             item_tag_order: load_tag_lists(root, "item", overlay)?,
             loot,
             songs: load_songs(root),
@@ -934,6 +937,7 @@ impl Items {
             registry_order: Vec::new(),
             block_tags: load_tags(root, "block", overlay)?,
             item_tags: load_tags(root, "item", overlay)?,
+            entity_tags: load_tags(root, "entity_type", overlay)?,
             item_tag_order: load_tag_lists(root, "item", overlay)?,
             loot: Default::default(),
             songs: HashMap::new(),
@@ -949,6 +953,7 @@ impl Items {
             order: Vec::new(),
             registry_order: Vec::new(),
             block_tags: HashMap::new(),
+            entity_tags: HashMap::new(),
             item_tag_order: item_tags
                 .iter()
                 .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
@@ -2250,6 +2255,22 @@ mod tests {
         let b = BlocksAttacks::of_stack(&bare, None).expect("defaults");
         assert_eq!(b.reductions[0].horizontal_angle, 90.0);
         assert_eq!(b.disable_scale, 1.0);
+    }
+
+    #[test]
+    fn entity_type_tags_survive_world_tag_loading() {
+        let root = std::env::temp_dir().join(format!("horizon-entity-tags-{}", std::process::id()));
+        let tags = root.join("data/test/tags/entity_type");
+        std::fs::create_dir_all(&tags).unwrap();
+        std::fs::write(tags.join("mobs.json"), r#"{"values":["test:mob"]}"#).unwrap();
+        let items = Items::tags_only(&root, &PackOverlay::default()).unwrap();
+        assert_eq!(
+            items.entity_tags["test:mobs"],
+            HashSet::from(["test:mob".into()])
+        );
+        assert!(items.block_tags.is_empty());
+        assert!(items.item_tags.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
