@@ -121,6 +121,8 @@ impl Macros {
         // (vanilla's `VertexSorting.byDistance`, `gfx/translucency.rs`).
         m.define("IRIS_VERSION", "11107");
         m.define("IRIS_HAS_TRANSLUCENCY_SORTING", "");
+        // Tag assignments use current-world membership; explicit names take precedence.
+        m.define("IRIS_TAG_SUPPORT", "2");
         m
     }
 

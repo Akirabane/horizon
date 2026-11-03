@@ -15,6 +15,41 @@ use horizon_client::gfx::pack_draw::EntitySpan;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 
+type TagMembers = HashMap<String, std::collections::HashSet<String>>;
+
+/// A server's explicitly empty tag registry overrides local tags too; only a registry not
+/// synchronized at all falls back to the current world's data packs.
+fn shader_tags<'a>(
+    local: &'a TagMembers,
+    registry: &str,
+    remote: Option<(
+        &horizon_protocol::registry::Dynamic,
+        &horizon_protocol::registry::Builtin,
+    )>,
+) -> std::borrow::Cow<'a, TagMembers> {
+    match remote.and_then(|(dynamic, builtin)| dynamic.named_tags(builtin, registry)) {
+        Some(tags) => std::borrow::Cow::Owned(tags),
+        None => std::borrow::Cow::Borrowed(local),
+    }
+}
+
+/// File presence determines the unmatched ID independently for entities and held items.
+fn read_named_ids(
+    pack: &Pack,
+    kind: &str,
+    macros: &Macros,
+    tags: &TagMembers,
+    unmatched: i32,
+) -> (BlockIds, i32) {
+    let text = pack.read_text(&format!("{kind}.properties"));
+    let ids = BlockIds::parse_kind(
+        &Properties::parse(text.as_deref().unwrap_or_default(), macros),
+        kind,
+    )
+    .resolve_tags(tags);
+    (ids, if text.is_some() { unmatched } else { 0 })
+}
+
 /// The values the player chose for pack `name`'s options (`shaderpacks/<name>.txt`).
 fn chosen_shader_options(name: &str) -> BTreeMap<String, String> {
     let file = Game::shader_packs_dir().join(horizon_shaders::chosen_file(name));
@@ -125,6 +160,8 @@ pub(super) fn picks_native_pack(settings: &horizon_client::settings::Settings) -
 pub(super) struct PackIds {
     entities: HashMap<String, i32>,
     blocks: BlockIds,
+    /// Tag synchronization can change any of the three ID maps.
+    uses_tags: bool,
     /// `blockEntityId` by block state, filled as states are drawn.
     block_states: RefCell<HashMap<u32, i32>>,
     /// The id of a name the file lacks: 65535, or 0 without the file.
@@ -234,23 +271,33 @@ impl Game<'_> {
                             biomes.list.iter().map(|b| b.name.as_str()).collect();
                         post.custom.set_biomes(&names);
                         let text = pack.read_text("block.properties").unwrap_or_default();
-                        let ids = BlockIds::parse(&Properties::parse(&text, &macros));
+                        let world_items = world_items!(self);
+                        let remote_tags =
+                            self.remote.as_ref().map(|r| (&*r.registries, &*r.builtin));
+                        let tags = |registry, local| shader_tags(local, registry, remote_tags);
+                        let ids = BlockIds::parse(&Properties::parse(&text, &macros))
+                            .resolve_tags(&tags("minecraft:block", &world_items.block_tags));
                         for note in &ids.notes {
                             log::warn!("shader pack {name}: block.properties: {note}");
                         }
-                        let text = pack.read_text("entity.properties");
-                        let entities = BlockIds::parse_kind(
-                            &Properties::parse(text.as_deref().unwrap_or_default(), &macros),
+                        let (entities, missing_entity) = read_named_ids(
+                            &pack,
                             "entity",
+                            &macros,
+                            &tags("minecraft:entity_type", &world_items.entity_tags),
+                            65535,
                         );
-                        let text = pack.read_text("item.properties");
-                        let items = BlockIds::parse_kind(
-                            &Properties::parse(text.as_deref().unwrap_or_default(), &macros),
+                        let (items, missing_item) = read_named_ids(
+                            &pack,
                             "item",
+                            &macros,
+                            &tags("minecraft:item", &world_items.item_tags),
+                            -1,
                         );
                         self.pack_ids = Some(PackIds {
+                            uses_tags: ids.uses_tags() || items.uses_tags() || entities.uses_tags(),
                             items: items.plain(),
-                            missing_item: if text.is_some() { -1 } else { 0 },
+                            missing_item,
                             // OQ-21: on unless the pack turns it off.
                             old_hand_light: properties
                                 .get("oldHandLight")
@@ -265,7 +312,7 @@ impl Game<'_> {
                                 .is_some_and(|v| v.trim() == "true"),
                             separate_ao,
                             entities: entities.plain(),
-                            missing_entity: if text.is_some() { 65535 } else { 0 },
+                            missing_entity,
                             missing_block: if ids.is_empty() { 0 } else { 65535 },
                             blocks: ids.clone(),
                             block_states: RefCell::default(),
@@ -438,6 +485,22 @@ impl Game<'_> {
             format!("Shader pack {name} could not be loaded and was turned off"),
             0xFF5555,
         ));
+    }
+
+    /// Tag synchronization changes shader IDs even when the chosen pack and dimension stay
+    /// the same. Re-read the original rules and rebuild terrain on the next frame.
+    pub(super) fn shader_pack_tags_changed(&mut self) {
+        if self.pack_ids.as_ref().is_none_or(|ids| !ids.uses_tags) {
+            return;
+        }
+        self.pack_ids = None;
+        if let Some(renderer) = &mut self.renderer {
+            renderer.drop_shader_packs();
+        }
+        self.native_shaders = super::native_shaders::NativeShaders::picking(&std::mem::take(
+            &mut self.native_shaders.picked,
+        ));
+        self.all_sections_changed();
     }
 
     /// Whether the game's vignette draws: the option, unless the loaded pack turns it off.
@@ -840,5 +903,81 @@ mod native_pack_tests {
         assert_eq!(active_pack("golden_hour", &mods), "golden_hour");
         mods.installed[0].native = None;
         assert_eq!(active_pack(owned, &mods), owned);
+    }
+}
+
+#[cfg(test)]
+mod shader_tag_tests {
+    use super::*;
+    use horizon_protocol::packets::configuration::{RegistryTags, TagEntry, UpdateTags};
+    use horizon_protocol::registry::{Builtin, Dynamic, Ids};
+
+    #[test]
+    fn current_server_tags_replace_local_members_and_reload_named_ids() {
+        let root = std::env::temp_dir().join(format!("horizon-shader-tags-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("shaders")).unwrap();
+        let pack = Pack::open(&root).unwrap();
+        let macros = Macros::standard();
+        let local = HashMap::from([(
+            "test:group".into(),
+            std::collections::HashSet::from(["test:local".into()]),
+        )]);
+        let builtin = Builtin {
+            registries: HashMap::from([(
+                "minecraft:entity_type".into(),
+                Ids::from_names(vec!["test:first".into(), "test:second".into()]),
+            )]),
+        };
+        let mut dynamic = Dynamic::default();
+        assert_eq!(
+            &*shader_tags(&local, "minecraft:entity_type", Some((&dynamic, &builtin))),
+            &local
+        );
+        assert_eq!(read_named_ids(&pack, "entity", &macros, &local, 65535).1, 0);
+        std::fs::write(
+            root.join("shaders/entity.properties"),
+            "entity.42=%test:group\nentity.7=test:explicit",
+        )
+        .unwrap();
+        for (members, expected) in [
+            (vec![0], Some("test:first")),
+            (vec![1], Some("test:second")),
+            (vec![], None),
+        ] {
+            assert!(dynamic.replace_tags(&UpdateTags {
+                registries: vec![RegistryTags {
+                    registry: "minecraft:entity_type".into(),
+                    tags: vec![TagEntry {
+                        name: "test:group".into(),
+                        ids: members
+                    }],
+                }]
+            }));
+            let tags = shader_tags(&local, "minecraft:entity_type", Some((&dynamic, &builtin)));
+            let (ids, missing) = read_named_ids(&pack, "entity", &macros, &tags, 65535);
+            assert_eq!(missing, 65535);
+            assert_eq!(ids.plain().get("test:local"), None);
+            assert_eq!(ids.plain()["test:explicit"], 7);
+            for name in ["test:first", "test:second"] {
+                assert_eq!(
+                    ids.plain().get(name).copied(),
+                    (Some(name) == expected).then_some(42)
+                );
+            }
+            // Item file presence is independent of the entity file.
+            assert_eq!(read_named_ids(&pack, "item", &macros, &local, -1).1, 0);
+        }
+        std::fs::write(root.join("shaders/entity.properties"), "").unwrap();
+        assert_eq!(
+            read_named_ids(&pack, "entity", &macros, &local, 65535).1,
+            65535
+        );
+        std::fs::write(root.join("shaders/item.properties"), "").unwrap();
+        assert_eq!(read_named_ids(&pack, "item", &macros, &local, -1).1, -1);
+        std::fs::write(root.join("shaders/item.properties"), "item.9=test:item").unwrap();
+        std::fs::remove_file(root.join("shaders/entity.properties")).unwrap();
+        assert_eq!(read_named_ids(&pack, "entity", &macros, &local, 65535).1, 0);
+        assert_eq!(read_named_ids(&pack, "item", &macros, &local, -1).1, -1);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

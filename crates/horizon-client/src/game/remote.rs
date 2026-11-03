@@ -2068,6 +2068,7 @@ impl Game<'_> {
                 Arc::new(ChunkFormat::new(&r.dimension, biomes, bits).in_column(column));
             r.registries = registries;
         }
+        self.shader_pack_tags_changed();
     }
     /// Switch to a (possibly new) dimension: a fresh client level.
     fn enter_remote_dimension(
@@ -4438,6 +4439,13 @@ impl Game<'_> {
                     self.remote_close_local();
                     self.screen = Screen::Playing;
                     self.capture(true);
+                }
+            }
+            C::UpdateTags(p) => {
+                if let Some(remote) = &mut self.remote
+                    && Arc::make_mut(&mut remote.registries).replace_tags(&p)
+                {
+                    self.shader_pack_tags_changed();
                 }
             }
             C::TagQuery(p) => self.answer_tag_query(p.transaction, p.tag),
