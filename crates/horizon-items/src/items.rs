@@ -2263,6 +2263,7 @@ mod tests {
         let tags = root.join("data/test/tags/entity_type");
         std::fs::create_dir_all(&tags).unwrap();
         std::fs::write(tags.join("mobs.json"), r#"{"values":["test:mob"]}"#).unwrap();
+        std::fs::write(root.join(crate::content_namespaces::MARKER), r#"["test"]"#).unwrap();
         let items = Items::tags_only(&root, &PackOverlay::default()).unwrap();
         assert_eq!(
             items.entity_tags["test:mobs"],
