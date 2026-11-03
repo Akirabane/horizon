@@ -1143,6 +1143,8 @@ impl Game<'_> {
         if let Some(mut r) = self.remote.take() {
             r.session.disconnect();
         }
+        // The server's tags go with it: the next world or server binds its own.
+        self.remote_items = None;
         super::lan::forget_sync_data();
         self.gui.atlas.object_skins.clear();
         self.server_packs_disconnect();
@@ -2073,7 +2075,50 @@ impl Game<'_> {
                 Arc::new(ChunkFormat::new(&r.dimension, biomes, bits).in_column(column));
             r.registries = registries;
         }
+        // RegistryDataCollector.appendTags: the configuration's tags are bound
+        // with the registries.
+        self.apply_server_tags();
         self.shader_pack_tags_changed();
+    }
+    /// `ClientPacketListener.handleUpdateTags` and the configuration's
+    /// `RegistryDataCollector.appendTags`: the block, item and entity type
+    /// tags the server sent replace the game's own in the tables this client
+    /// plays with (`Game::items`). A member the client's registries lack (a
+    /// server mod's block) is left out, with a warning in the log.
+    pub(super) fn apply_server_tags(&mut self) {
+        let Some(r) = self.remote.as_ref() else {
+            self.remote_items = None;
+            return;
+        };
+        let named = |registry: &str| -> Option<HashMap<String, Vec<String>>> {
+            let tags = r.registries.tags.get(registry)?;
+            let names = r.builtin.get(registry);
+            let mut unknown = 0usize;
+            let mut out = HashMap::with_capacity(tags.len());
+            for (tag, ids) in tags {
+                let mut members = Vec::with_capacity(ids.len());
+                for id in ids {
+                    match names.and_then(|n| n.name(*id)).filter(|n| !n.is_empty()) {
+                        Some(name) => members.push(name.to_owned()),
+                        None => unknown += 1,
+                    }
+                }
+                out.insert(tag.clone(), members);
+            }
+            if unknown > 0 {
+                log::warn!(
+                    "Horizon: the server's {registry} tags name {unknown} entries this client does not know; they are left out"
+                );
+            }
+            Some(out)
+        };
+        let tags = horizon_client::items::ServerTags {
+            block: named("minecraft:block"),
+            item: named("minecraft:item"),
+            entity_type: named("minecraft:entity_type"),
+        };
+        self.remote_items = (tags != horizon_client::items::ServerTags::default())
+            .then(|| self.res.items().with_server_tags(&tags));
     }
     /// Switch to a (possibly new) dimension: a fresh client level.
     fn enter_remote_dimension(
@@ -4474,6 +4519,9 @@ impl Game<'_> {
                 if let Some(remote) = &mut self.remote
                     && Arc::make_mut(&mut remote.registries).replace_tags(&p)
                 {
+                    // ClientPacketListener.handleUpdateTags: the play phase's
+                    // tags (after `/reload`) replace the configuration's.
+                    self.apply_server_tags();
                     self.shader_pack_tags_changed();
                 }
             }

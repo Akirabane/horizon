@@ -8,9 +8,10 @@
 /// which borrows stay disjoint from.
 macro_rules! world_items {
     ($s:ident) => {
-        match &$s.world_tables {
-            Some(t) => &t.items,
-            None => $s.res.items(),
+        match (&$s.world_tables, &$s.remote_items) {
+            (Some(t), _) => &t.items,
+            (None, Some(items)) => items,
+            (None, None) => $s.res.items(),
         }
     };
 }
@@ -2728,6 +2729,9 @@ struct Game<'a> {
     /// The world's data packs' content tables, when it has packs (`None`
     /// keeps `Resources.rest`'s own in use).
     world_tables: Option<WorldTables>,
+    /// A client of a server: the content tables with the tags the server
+    /// sent (`apply_server_tags`), when it sent any.
+    remote_items: Option<Items>,
     /// The world is superflat (`ServerLevel.isFlat`, for every dimension).
     world_flat: bool,
     /// The world is the Debug preset (`Level.isDebug`, for every dimension): its blocks
@@ -19066,6 +19070,7 @@ impl<'a> Game<'a> {
             rcon_source: false,
             server_lists: None,
             world_tables: None,
+            remote_items: None,
             cmds: Default::default(),
             ui: chat::UiState::new(),
             combat: Default::default(),
@@ -19385,11 +19390,13 @@ impl Game<'_> {
     // ---- the world's data packs' content tables ---------------------------
 
     /// The content tables the world plays with: its data packs' over the
-    /// game's own when it has packs, `Resources.rest`'s own otherwise.
+    /// game's own when it has packs, the server's tags over the game's own
+    /// on a client of a server, `Resources.rest`'s own otherwise.
     fn items(&self) -> &Items {
-        match &self.world_tables {
-            Some(t) => &t.items,
-            None => self.res.items(),
+        match (&self.world_tables, &self.remote_items) {
+            (Some(t), _) => &t.items,
+            (None, Some(items)) => items,
+            (None, None) => self.res.items(),
         }
     }
     fn recipes(&self) -> &Recipes {
