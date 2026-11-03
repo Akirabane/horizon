@@ -1145,6 +1145,7 @@ impl Game<'_> {
         }
         // The server's tags go with it: the next world or server binds its own.
         self.remote_items = None;
+        self.motion = self.res.motion().clone();
         super::lan::forget_sync_data();
         self.gui.atlas.object_skins.clear();
         self.server_packs_disconnect();
@@ -2119,6 +2120,20 @@ impl Game<'_> {
         };
         self.remote_items = (tags != horizon_client::items::ServerTags::default())
             .then(|| self.res.items().with_server_tags(&tags));
+        // The movement tables made from block tags (climbable, fences and walls,
+        // suppresses_bounce, can_glide_through, the step sounds) follow the
+        // server's block tags too: what the client's own movement predicts.
+        // Built here, when the tags arrive, never per tick.
+        self.motion = match self.remote_items.as_ref().filter(|_| tags.block.is_some()) {
+            Some(items) => match self.res.motion().with_block_tags(&items.block_tags) {
+                Ok(motion) => motion,
+                Err(e) => {
+                    log::warn!("Horizon: the server's block tags do not make movement tables: {e}");
+                    self.res.motion().clone()
+                }
+            },
+            None => self.res.motion().clone(),
+        };
     }
     /// Switch to a (possibly new) dimension: a fresh client level.
     fn enter_remote_dimension(
@@ -5622,7 +5637,7 @@ impl Game<'_> {
                 player.velocity = delta;
             }
             None => {
-                let mut player = PlayerMotion::new(self.motion, position)?;
+                let mut player = PlayerMotion::new(&self.motion, position)?;
                 // Player.tick derives noPhysics from the current game mode.
                 player.spectator = self.spectator();
                 player.velocity = delta;
@@ -5980,7 +5995,7 @@ impl Game<'_> {
                 scene: &mut self.world,
                 assets: &self.pack.assets,
                 collision_binding: self.collision,
-                resources: self.motion,
+                resources: &self.motion,
             }
             .controlled_simulation_tick_with_sprint_window(keys, sprint_window)?;
         } else {
@@ -5995,7 +6010,7 @@ impl Game<'_> {
                     scene: &mut self.world,
                     assets: &self.pack.assets,
                     collision_binding: self.collision,
-                    resources: self.motion,
+                    resources: &self.motion,
                 }
                 .passenger_pose_tick()?;
             }

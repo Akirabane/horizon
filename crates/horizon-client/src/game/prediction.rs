@@ -79,7 +79,7 @@ impl Game<'_> {
                 scene: &mut self.world,
                 assets: &self.pack.assets,
                 collision_binding: self.collision,
-                resources: self.motion,
+                resources: &self.motion,
             }
             .replayed_tick(keys, sprinting)
         };

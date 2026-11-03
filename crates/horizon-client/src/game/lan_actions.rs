@@ -382,7 +382,7 @@ impl Game<'_> {
                 host.hub.guests[i].position[1],
                 host.hub.guests[i].position[2],
             );
-            host.hub.guests[i].motion = PlayerMotion::new(self.motion, p).ok().map(Box::new);
+            host.hub.guests[i].motion = PlayerMotion::new(&self.motion, p).ok().map(Box::new);
             // The first body after joining burns, breathes and falls on as saved.
             let g = &mut host.hub.guests[i];
             if let Some(saved) = g.loaded_body.take()
@@ -3553,7 +3553,7 @@ impl Game<'_> {
             let m = *m;
             g.logs_kept = Some((m.hurt_log, m.attack_log));
         }
-        g.health = g.respawn_health(self.motion);
+        g.health = g.respawn_health(&self.motion);
         let mut xp = Experience {
             level: g.xp_level,
             progress: g.xp_progress,
@@ -4297,8 +4297,8 @@ impl Game<'_> {
         let mut soul = None;
         let mut jumps = 0;
         let events = self.as_guest(host, conn, |game| {
-            let (rules, motion) = (game.world.health_rules, game.motion);
-            let health = &motion.health;
+            let (rules, health) = (game.world.health_rules, game.motion.health.clone());
+            let health = &*health;
             let freeze_immune = game.wears_freeze_immune();
             let burn_immune = game.wears_burn_from_stepping_immunity();
             let boat = game.riding_boat_fluid_box();
@@ -4312,7 +4312,7 @@ impl Game<'_> {
                 scene: &mut game.world,
                 assets: &game.pack.assets,
                 collision_binding: game.collision,
-                resources: game.motion,
+                resources: &game.motion,
             };
             w.player.health.advance_clock();
             let _ = w.fluid_base_tick();
@@ -4448,7 +4448,7 @@ impl Game<'_> {
                 scene: &mut game.world,
                 assets: &game.pack.assets,
                 collision_binding: game.collision,
-                resources: game.motion,
+                resources: &game.motion,
             }
             .server_travel();
             // Landing damage from this travel reaches the tracker too.

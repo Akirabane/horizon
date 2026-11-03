@@ -517,7 +517,7 @@ impl Game<'_> {
         self.creative = self.mode == GameMode::Creative;
         let distance = op["distance"].as_f64().unwrap_or(3.0);
         let mut player = PlayerMotion::new(
-            self.motion,
+            &self.motion,
             horizon_core::geometry::Vec3::new(
                 f64::from(pos.x) + 0.5,
                 f64::from(pos.y) + 1.0,
@@ -638,7 +638,7 @@ impl Game<'_> {
                 v[2].as_f64().unwrap_or(0.0),
             )
         };
-        let mut player = PlayerMotion::new(self.motion, v3(&op["player"]))?;
+        let mut player = PlayerMotion::new(&self.motion, v3(&op["player"]))?;
         player.velocity = v3(&op["motion"]);
         player.fall_distance = op["fall"].as_f64().unwrap_or(0.0);
         player.fall_flying = op["fall_flying"].as_bool().unwrap_or(false);
@@ -870,7 +870,7 @@ impl Game<'_> {
         self.mode = GameMode::Survival;
         self.creative = false;
         self.player = Some(PlayerMotion::new(
-            self.motion,
+            &self.motion,
             horizon_core::geometry::Vec3::new(
                 f64::from(pos.x) + 0.5,
                 f64::from(pos.y) + 1.0,

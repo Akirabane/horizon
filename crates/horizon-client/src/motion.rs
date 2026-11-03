@@ -56,26 +56,104 @@ pub use fluids::{
     bubble_column_at, bubble_column_push, bubble_column_push_over, bubble_column_surfaces,
 };
 
+/// The motion tables. Each sits behind an `Arc`, so a copy is cheap: a
+/// client of a server keeps its own, with the tables that come from block
+/// tags rebuilt from the tags the server sent (`with_block_tags`), and leaves
+/// the game's shared ones (its own server thread's) as they are.
+#[derive(Clone)]
 pub struct MotionResources {
     pub attributes: Arc<Catalog>,
-    pub blocks: BoundMovementProperties,
-    pub climbable: BTreeSet<String>,
+    pub blocks: Arc<BoundMovementProperties>,
+    pub climbable: Arc<BTreeSet<String>>,
     /// `BlockTags.SOUL_SPEED_BLOCKS`: what Soul Speed's effects look for.
-    pub soul_speed_blocks: BTreeSet<String>,
+    pub soul_speed_blocks: Arc<BTreeSet<String>>,
     /// `LivingEntity.onClimbable` tags plus open trapdoors above a ladder.
-    pub climbing: ClimbingRegistry<'static>,
-    pub fall_reset: BTreeSet<String>,
+    pub climbing: Arc<ClimbingRegistry<'static>>,
+    pub fall_reset: Arc<BTreeSet<String>>,
     /// `BlockTags.INSIDE_STEP_SOUND_BLOCKS`.
-    pub inside_step_sound: BTreeSet<String>,
+    pub inside_step_sound: Arc<BTreeSet<String>>,
     /// `BlockTags.COMBINATION_STEP_SOUND_BLOCKS`.
-    pub combination_step_sound: BTreeSet<String>,
+    pub combination_step_sound: Arc<BTreeSet<String>>,
     /// `BlockTags.CRYSTAL_SOUND_BLOCKS`: blocks that chime under footsteps.
-    pub crystal_sound: BTreeSet<String>,
-    pub landing: BlockLandingRegistry,
-    pub health: crate::health::HealthResources,
-    pub fluids: FluidResources,
+    pub crystal_sound: Arc<BTreeSet<String>>,
+    pub landing: Arc<BlockLandingRegistry>,
+    pub health: Arc<crate::health::HealthResources>,
+    pub fluids: Arc<FluidResources>,
+    /// The movement definitions before the tags bind them (`blocks`).
+    properties: Arc<MovementProperties<'static>>,
+    registry: &'static horizon_world::registry::BlockRegistry,
+}
+/// The motion tables made from block tags.
+struct TaggedTables {
+    blocks: BoundMovementProperties,
+    climbable: BTreeSet<String>,
+    soul_speed_blocks: BTreeSet<String>,
+    climbing: ClimbingRegistry<'static>,
+    fall_reset: BTreeSet<String>,
+    inside_step_sound: BTreeSet<String>,
+    combination_step_sound: BTreeSet<String>,
+    crystal_sound: BTreeSet<String>,
+}
+impl TaggedTables {
+    fn build(
+        registry: &'static horizon_world::registry::BlockRegistry,
+        properties: &MovementProperties<'static>,
+        tag: impl Fn(&str) -> Result<BTreeSet<String>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            blocks: properties.bind(&MovementTags {
+                fences: tag("minecraft:fences")?,
+                walls: tag("minecraft:walls")?,
+                suppresses_bounce: tag("minecraft:suppresses_bounce")?,
+            })?,
+            climbing: ClimbingRegistry::new(
+                registry,
+                &tag("minecraft:trapdoors")?,
+                &tag("minecraft:climbable")?,
+                &tag("minecraft:can_glide_through")?,
+            )?,
+            climbable: tag("minecraft:climbable")?,
+            soul_speed_blocks: tag("minecraft:soul_speed_blocks")?,
+            fall_reset: tag("minecraft:fall_damage_resetting")?,
+            inside_step_sound: tag("minecraft:inside_step_sound_blocks")?,
+            combination_step_sound: tag("minecraft:combination_step_sound_blocks")?,
+            crystal_sound: tag("minecraft:crystal_sound_blocks")?,
+        })
+    }
 }
 impl MotionResources {
+    /// These tables with the ones made from block tags rebuilt from `tags`
+    /// (tag name -> member block names): the tags a client's server sent.
+    /// `ClientPacketListener.handleUpdateTags` binds a registry's tags whole,
+    /// so a tag the server did not send is empty; a member the game's block
+    /// registry does not know is left out.
+    pub fn with_block_tags(
+        &self,
+        tags: &std::collections::HashMap<String, std::collections::HashSet<String>>,
+    ) -> Result<Self> {
+        let registry = self.registry;
+        let tag = |name: &str| -> Result<BTreeSet<String>> {
+            Ok(tags
+                .get(name)
+                .into_iter()
+                .flatten()
+                .filter(|block| registry.default_state(block).is_some())
+                .cloned()
+                .collect())
+        };
+        let t = TaggedTables::build(registry, &self.properties, tag)?;
+        Ok(Self {
+            blocks: Arc::new(t.blocks),
+            climbable: Arc::new(t.climbable),
+            soul_speed_blocks: Arc::new(t.soul_speed_blocks),
+            climbing: Arc::new(t.climbing),
+            fall_reset: Arc::new(t.fall_reset),
+            inside_step_sound: Arc::new(t.inside_step_sound),
+            combination_step_sound: Arc::new(t.combination_step_sound),
+            crystal_sound: Arc::new(t.crystal_sound),
+            ..self.clone()
+        })
+    }
     /// [`Self::load_with_facts`] with the block facts decoded here.
     pub fn load(root: &Path, assets: &Assets) -> Result<Self> {
         Self::load_with_facts(
@@ -117,29 +195,22 @@ impl MotionResources {
                 .cloned()
                 .collect())
         };
-        let climbing = ClimbingRegistry::new(
-            assets.registry,
-            &tag("minecraft:trapdoors")?,
-            &tag("minecraft:climbable")?,
-            &tag("minecraft:can_glide_through")?,
-        )?;
+        let t = TaggedTables::build(assets.registry, &properties, tag)?;
         Ok(Self {
-            landing: crate::landing::load(root, &properties)?,
-            health: crate::health::HealthResources::load(root)?,
-            fluids: FluidResources::new(assets, facts)?,
+            landing: Arc::new(crate::landing::load(root, &properties)?),
+            health: Arc::new(crate::health::HealthResources::load(root)?),
+            fluids: Arc::new(FluidResources::new(assets, facts)?),
             attributes,
-            blocks: properties.bind(&MovementTags {
-                fences: tag("minecraft:fences")?,
-                walls: tag("minecraft:walls")?,
-                suppresses_bounce: tag("minecraft:suppresses_bounce")?,
-            })?,
-            climbable: tag("minecraft:climbable")?,
-            soul_speed_blocks: tag("minecraft:soul_speed_blocks")?,
-            climbing,
-            fall_reset: tag("minecraft:fall_damage_resetting")?,
-            inside_step_sound: tag("minecraft:inside_step_sound_blocks")?,
-            combination_step_sound: tag("minecraft:combination_step_sound_blocks")?,
-            crystal_sound: tag("minecraft:crystal_sound_blocks")?,
+            blocks: Arc::new(t.blocks),
+            climbable: Arc::new(t.climbable),
+            soul_speed_blocks: Arc::new(t.soul_speed_blocks),
+            climbing: Arc::new(t.climbing),
+            fall_reset: Arc::new(t.fall_reset),
+            inside_step_sound: Arc::new(t.inside_step_sound),
+            combination_step_sound: Arc::new(t.combination_step_sound),
+            crystal_sound: Arc::new(t.crystal_sound),
+            properties: Arc::new(properties),
+            registry: assets.registry,
         })
     }
 }
@@ -5556,5 +5627,48 @@ mod tests {
             0.1,
             "the flight speed follows the sprint state, not the sprint key"
         );
+    }
+
+    /// #7843: a client's movement tables follow the block tags its server
+    /// sent, a registry's tags whole: dirt made climbable is climbed, the
+    /// game's ladder is not once the server's `climbable` leaves it out, and an
+    /// oak fence is no fence when the server sends no `fences`. A member the
+    /// game does not know is left out.
+    #[test]
+    fn a_servers_block_tags_rebuild_the_movement_tables() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let game = MotionResources::load(&root, &assets).unwrap();
+        let registry = assets.registry;
+        let id = |name: &str| registry.default_state(name).unwrap();
+        let (dirt, ladder, fence) = (
+            id("minecraft:dirt"),
+            id("minecraft:ladder"),
+            id("minecraft:oak_fence"),
+        );
+        assert!(game.climbing.is_climbable_tag(ladder).unwrap());
+        assert!(!game.climbing.is_climbable_tag(dirt).unwrap());
+        assert!(game.blocks.get(fence).unwrap().fence);
+        let tags = std::collections::HashMap::from([(
+            "minecraft:climbable".to_owned(),
+            std::collections::HashSet::from([
+                "minecraft:dirt".to_owned(),
+                "test:not_a_block".to_owned(),
+            ]),
+        )]);
+        let client = game.with_block_tags(&tags).unwrap();
+        assert!(client.climbing.is_climbable_tag(dirt).unwrap());
+        assert!(!client.climbing.is_climbable_tag(ladder).unwrap());
+        assert!(client.climbable.contains("minecraft:dirt"));
+        assert!(!client.climbable.contains("test:not_a_block"));
+        assert!(!client.blocks.get(fence).unwrap().fence);
+        // The game's own tables are untouched.
+        assert!(game.climbing.is_climbable_tag(ladder).unwrap());
+        assert!(game.blocks.get(fence).unwrap().fence);
     }
 }

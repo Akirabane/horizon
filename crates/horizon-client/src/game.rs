@@ -2334,7 +2334,10 @@ struct Game<'a> {
     integrated_starting: Option<integrated::Starting>,
     world_renderer_ready: bool,
     collision: &'a BlockCollisionRegistry<'a>,
-    motion: &'a MotionResources,
+    /// The motion tables: the game's own, or on a client of a server those
+    /// with the tables made from block tags rebuilt from the server's tags
+    /// (`apply_server_tags`). A cheap copy of `Resources`' (its `Arc`s).
+    motion: MotionResources,
     /// This game's resource packs (`reload_packs` replaces them).
     pack: PackResources,
     /// The title and menu bundle (GUI atlas, font and panorama).
@@ -7388,7 +7391,7 @@ impl Game<'_> {
                 Vec3::new(s.x, y.max(s.y), s.z)
             }
         };
-        let mut player = PlayerMotion::new(self.motion, feet)?;
+        let mut player = PlayerMotion::new(&self.motion, feet)?;
         player.yaw = self.yaw;
         let entering = self.restore_player_state;
         player.load_saved_state_once(&mut self.restore_player_state, &self.level)?;
@@ -12137,6 +12140,7 @@ impl Game<'_> {
         self.score = Default::default();
         self.fns = Default::default();
         self.world_tables = self.build_world_tables();
+        self.bind_world_motion();
         // Native tag reads use the lock to tell that the tag tables are ready.
         self.session_lock = Some(session_lock);
         // The registries a preload or an earlier world read are not this
@@ -18686,7 +18690,7 @@ impl<'a> Game<'a> {
             integrated_starting: None,
             world_renderer_ready: false,
             collision: res.collision(),
-            motion: res.motion(),
+            motion: res.motion().clone(),
             pack,
             gui,
             fog: Default::default(),
@@ -19549,6 +19553,21 @@ impl Game<'_> {
             data_maps,
         })
     }
+    /// The movement tables made from block tags, from the world's packs'
+    /// tags when it has packs (a block a pack makes climbable is climbed on the
+    /// server too), the game's own otherwise.
+    fn bind_world_motion(&mut self) {
+        self.motion = match &self.world_tables {
+            Some(t) => match self.res.motion().with_block_tags(&t.items.block_tags) {
+                Ok(motion) => motion,
+                Err(e) => {
+                    log::warn!("Horizon: the world's pack tags do not make movement tables: {e}");
+                    self.res.motion().clone()
+                }
+            },
+            None => self.res.motion().clone(),
+        };
+    }
     /// Reload the content tables with the world's packs, as
     /// `/reload` reloads a server's (`ReloadableServerResources`).
     pub(super) fn reload_world_tables(&mut self) {
@@ -19556,6 +19575,7 @@ impl Game<'_> {
             return;
         }
         self.world_tables = self.build_world_tables();
+        self.bind_world_motion();
         self.recipe_tables.categories = None;
         horizon_client::structure_blocks::forget_loot_data();
         // Before the players are sent the reloaded data below.

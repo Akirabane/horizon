@@ -405,7 +405,7 @@ impl Game<'_> {
             _ => GameMode::Survival,
         };
         self.creative = self.mode == GameMode::Creative;
-        let mut player = PlayerMotion::new(self.motion, Vec3::new(at[0], at[1], at[2]))?;
+        let mut player = PlayerMotion::new(&self.motion, Vec3::new(at[0], at[1], at[2]))?;
         player.spectator = self.mode == GameMode::Spectator;
         self.player = Some(player);
         if s.trace_events {
