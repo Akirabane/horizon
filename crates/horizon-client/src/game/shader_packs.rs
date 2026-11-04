@@ -307,7 +307,7 @@ impl Game<'_> {
                         self.pack_ids = Some(PackIds {
                             uses_tags: ids.uses_tags() || items.uses_tags() || entities.uses_tags(),
                             block_items,
-                            item_file: text.is_some(),
+                            item_file: pack.read_text("item.properties").is_some(),
                             items: items.plain(),
                             missing_item,
                             // OQ-21: on unless the pack turns it off.
