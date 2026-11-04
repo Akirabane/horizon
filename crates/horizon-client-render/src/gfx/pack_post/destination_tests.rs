@@ -151,14 +151,14 @@ fn pack(
     post
 }
 
-struct Fixture {
-    adapter: wgpu::Adapter,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+pub(super) struct Fixture {
+    pub(super) adapter: wgpu::Adapter,
+    pub(super) device: wgpu::Device,
+    pub(super) queue: wgpu::Queue,
 }
 
 impl Fixture {
-    fn new() -> Option<Self> {
+    pub(super) fn new() -> Option<Self> {
         let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             eprintln!("Post destination test skipped: no GPU adapter");
@@ -198,7 +198,7 @@ impl Fixture {
             .create_view(&Default::default())
     }
 
-    fn build(&self, post: Post) -> PackPost {
+    pub(super) fn build(&self, post: Post) -> PackPost {
         let lightmap = self.texture([1, 1], T::Rgba8Unorm);
         let post = PackPost::new(
             &self.device,
@@ -208,6 +208,7 @@ impl Fixture {
             T::Rgba8Unorm,
             World {
                 atlas: None,
+                material_maps: None,
                 lightmap,
                 terrain: None,
                 block_ids: &[],
@@ -226,7 +227,7 @@ impl Fixture {
         post
     }
 
-    fn render(&self, post: &mut PackPost, size: [u32; 2]) -> Vec<[u8; 4]> {
+    pub(super) fn render(&self, post: &mut PackPost, size: [u32; 2]) -> Vec<[u8; 4]> {
         let world = self.texture(size, T::Rgba8Unorm);
         let depth = self.texture(size, T::Depth32Float);
         let screen = self.texture(size, T::Rgba8Unorm);
@@ -346,8 +347,8 @@ fn frame_clear_and_retained_history_apply_before_partial_post_writes() {
     let Some(gpu) = Fixture::new() else { return };
     for clear in [true, false] {
         let mut post = gpu.build(pack(Coverage::Full, false, false, Some(clear), false));
-        // Every frame changes which physical image is main. The other image is fully
-        // seeded red before the partial write, independent of its initial clearing.
+        // The other image is fully seeded red before the partial write, independent of its
+        // initial clearing.
         for frame in 0..3 {
             let actual = gpu.render(&mut post, [16, 16]);
             assert!(
@@ -433,6 +434,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         celestial: &[],
         stars: None,
         hand: &[],
+        hand_items: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
         pack: Default::default(),
@@ -521,3 +523,6 @@ fn a_cleared_buffer_starts_every_frame_cleared_on_both_textures() {
         assert!(wrong.is_empty(), "frame {frame}: {wrong:?}");
     }
 }
+
+#[path = "clear_false_tests.rs"]
+mod clear_false_tests;
