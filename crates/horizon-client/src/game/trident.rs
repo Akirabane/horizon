@@ -1063,7 +1063,7 @@ mod tests {
         )
         .unwrap();
         game.player =
-            Some(PlayerMotion::new(&game.motion, super::Vec3::new(4.5, 200.0, 4.5)).unwrap());
+            Some(PlayerMotion::new(game.motion, super::Vec3::new(4.5, 200.0, 4.5)).unwrap());
         let mut stack = super::ItemStack::new("minecraft:trident", 1);
         stack.damage = 8;
         stack
