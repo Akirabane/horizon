@@ -1,0 +1,161 @@
+name: server build
+
+# Builds the Linux SERVER archive (horizon-engine, horizon-server, horizon-prepare) of ONE commit of
+# horizon-rust/horizon, on the fork's own runners, and keeps it as a workflow artifact for 7 days. It is a
+# stand-in for the Nightly while a Nightly with the transfer module is not published: the commands are those of
+# horizon-rust/horizon's .github/workflows/game-build.yml ("The server build", ubuntu-22.04) without its signing,
+# its smoke test and its Mac mini jobs.
+#
+# What it does NOT have: the "exporters" (Horizon's compiled Java classes, built on the maintainers' machine
+# against Minecraft's own jars). They are only used by `horizon-prepare`, so an installation that already has its
+# prepared game files (`<dir>/game-files/horizon-client/26.3`) does not need them. The archive is NOT signed:
+# check it by the SHA-256 this job prints, and install it with `install.sh --archive` (which says it checks nothing).
+#
+# Two ways to start it, both in a branch of THE FORK (never a pull request to horizon-rust/horizon):
+#   - push a branch named  ci/server-build-<commit>   (the commit of horizon-rust/horizon main to build, 7 to 40
+#     hex digits; with no digits the head of main is built), or
+#   - run it by hand (workflow_dispatch needs this file on the fork's default branch):
+#       gh workflow run "server build" -R Akirabane/horizon -f ref=<commit>
+#
+# No secret is used, the token reads contents only, the upstream code is checked out without credentials and
+# compiled; nothing of it is run except the build's own scripts and the checks below.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: The commit (or branch) of horizon-rust/horizon to build
+        type: string
+        default: main
+  push:
+    branches:
+      - 'ci/server-build-**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    name: Linux server archive
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Which commit
+        id: which
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          BRANCH: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ref=${INPUT_REF:-}
+          if [ -z "$ref" ]; then
+            suffix=${BRANCH#ci/server-build-}
+            if [[ $suffix =~ ^[0-9a-f]{7,40}$ ]]; then ref=$suffix; else ref=main; fi
+          fi
+          if ! [[ $ref =~ ^[0-9A-Za-z._/-]+$ ]]; then
+            echo "not a commit or a branch name: $ref" >&2
+            exit 1
+          fi
+          # actions/checkout fetches a name as a branch or tag prefix: only a FULL 40-digit commit is fetched
+          # as an object. A short commit is therefore resolved here (public API, read-only token).
+          if [[ $ref =~ ^[0-9a-f]{7,39}$ ]]; then
+            full=$(gh api "repos/horizon-rust/horizon/commits/$ref" --jq .sha)
+            if ! [[ $full =~ ^[0-9a-f]{40}$ ]]; then
+              echo "cannot resolve $ref in horizon-rust/horizon" >&2
+              exit 1
+            fi
+            ref=$full
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Building $ref of horizon-rust/horizon"
+
+      - uses: actions/checkout@v7
+        with:
+          repository: horizon-rust/horizon
+          ref: ${{ steps.which.outputs.ref }}
+          persist-credentials: false
+
+      - name: The commit that was checked out
+        id: head
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:9}" >> "$GITHUB_OUTPUT"
+          git log -1 --format='%H %cI %s'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Keyed on the lockfile: the next run of the same fork restores the crates.io dependencies.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fork-server-build
+
+      - name: ALSA and udev headers (horizon-server's dependencies may link them; the engine below does not)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+
+      # As game-build.yml, in this order: horizon-prepare and horizon-server first, then the game without sound
+      # or controllers, which is horizon-engine.
+      - name: Build horizon-prepare and horizon-server
+        run: cargo build --release --locked -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
+
+      - name: Build the engine (the game without sound or controllers)
+        run: cargo build --release --locked -p horizon-client --no-default-features --bin horizon-client
+
+      - name: Assemble the server folder
+        id: pack
+        run: |
+          set -euo pipefail
+          dir=horizon-server-linux-x86_64
+          rm -rf "dist/$dir"
+          mkdir -p "dist/$dir"
+          install -m 0755 target/release/horizon-client "dist/$dir/horizon-engine"
+          install -m 0755 target/release/horizon-server "dist/$dir/horizon-server"
+          install -m 0755 target/release/horizon-prepare "dist/$dir/horizon-prepare"
+          # The sources the release folders take (xtask's ARCHIVED), as `git archive` writes them.
+          git archive --format=tar HEAD tools mods/horizon/src/test/java crates/horizon-prepare research-lock.json LICENSE \
+            | tar -x -C "dist/$dir"
+          {
+            echo "Built by the fork's 'server build' workflow, not by Horizon's release train."
+            echo "commit: ${{ steps.head.outputs.sha }}"
+            echo "No exporters/ folder and no signature. Prepared game files are not part of this archive."
+          } > "dist/$dir/FORK-BUILD.txt"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      - name: Check the programs
+        run: |
+          set -euo pipefail
+          folder=dist/${{ steps.pack.outputs.dir }}
+          python3 tools/check_imports.py --server "$folder/horizon-engine" "$folder/horizon-server" "$folder/horizon-prepare"
+          "$folder/horizon-engine" --help | grep -q -- '--resources'
+          "$folder/horizon-server" --version
+          ldd "$folder/horizon-engine" | sort
+          echo "glibc symbols needed (highest):"
+          objdump -T "$folder/horizon-engine" "$folder/horizon-server" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -3
+
+      - name: Package and hash
+        id: tar
+        run: |
+          set -euo pipefail
+          name=horizon-server-linux-x86_64-${{ steps.head.outputs.short }}.tar.gz
+          (cd dist && tar czf "$name" "${{ steps.pack.outputs.dir }}")
+          (cd dist && sha256sum "$name" | tee "$name.sha256")
+          ls -l dist/*.tar.gz
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.tar.outputs.name }}
+          path: |
+            dist/${{ steps.tar.outputs.name }}
+            dist/${{ steps.tar.outputs.name }}.sha256
+          if-no-files-found: error
+          retention-days: 7
