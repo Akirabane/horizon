@@ -1449,7 +1449,7 @@ impl Game<'_> {
         })
     }
     /// `ItemStack.getDisplayName`: the hover name (custom name in italics,
-    /// a written book's title, a potion's effect name, else the item's
+    /// a written book's title, a potion's effect name, a lodestone compass, else the item's
     /// translated name) in brackets, in the rarity colour and showing the
     /// stack on hover unless it is empty.
     pub(super) fn stack_display_name(&self, s: &ItemStack) -> Text {
@@ -1461,6 +1461,13 @@ impl Game<'_> {
         } else if let Some(key) = horizon_client::brewing::contents_name_key(s) {
             // A potion's or tipped arrow's own name, over its `item_name`.
             Text::translate(&key, &[])
+        } else if item == "minecraft:compass"
+            && s
+                .data()
+                .is_some_and(|d| d.other("minecraft:lodestone_tracker").is_some())
+        {
+            // `CompassItem.getName`: a lodestone tracker names it, over `item_name`.
+            Text::translate("item.minecraft.lodestone_compass", &[])
         } else if let Some(name) = s.data().and_then(|d| d.other("minecraft:item_name")) {
             // `ItemStack.getItemName`: the `item_name` component wins over the
             // item's own name (`Item.getName`), so a datapack's or a server's
