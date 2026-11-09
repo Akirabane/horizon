@@ -248,3 +248,10 @@ fn crack_packets_follow_start_clock_and_strict_observer_radius() {
     drop(game);
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+mod guest_upward_fall_reset_tests {
+    include!("guest_upward_fall_reset_tests.rs");
+    mod bounded_controls {
+        include!("guest_upward_fall_reset_controls.rs");
+    }
+}

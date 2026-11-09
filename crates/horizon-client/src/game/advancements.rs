@@ -3,6 +3,8 @@
 //! chat announcement, and `players/advancements/<uuid>.json`.
 use super::{Dim, Game};
 
+mod guest_fall_reset;
+
 #[cfg(test)]
 #[path = "inventory_changed_tests.rs"]
 mod inventory_changed_tests;
@@ -1443,22 +1445,6 @@ impl Game<'_> {
         self.adv.marks.effects = self.effects_seen();
         self.adv.marks.effect_changes = self.potions.effects.changes;
         self.trigger_effects_changed(source);
-    }
-    /// `DistanceTrigger`: the player's `player` condition, `start_position`
-    /// at `start`, and the `distance` from `start` to the player.
-    fn trigger_distance(&mut self, name: &str, start: [f64; 3]) {
-        let me = self.player_entity_for(name);
-        self.trigger(name, move |c, w| {
-            let pctx = adv::Entities {
-                this: Some(&me),
-                origin: me.position,
-                tool: None,
-                block_pos: None,
-            };
-            adv::conditions(&c["player"], &pctx, w)
-                && adv::location(&c["start_position"], start, w)
-                && (c["distance"].is_null() || adv::distance(&c["distance"], start, me.position))
-        });
     }
     /// `FallAfterExplosionTrigger.trigger`: a blast that hit the player at
     /// `impact` (made by `cause`, or by nothing), measured to where the

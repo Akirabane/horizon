@@ -97,10 +97,10 @@ CuredZombieVillagerTrigger.TriggerInstance.validate	skip:data		load-time validat
 DefaultBlockInteractionTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_default_block_use	default_block_use from an empty-hand block use, at the block's centre with no tool
 DefaultBlockInteractionTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_block	the location test
 DefaultBlockInteractionTrigger.TriggerInstance.validate	skip:data		load-time validation
-DistanceTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_distance	
+DistanceTrigger.trigger	port	crates/horizon-client/src/game/advancements/guest_fall_reset.rs::Game::trigger_distance	
 DistanceTrigger.TriggerInstance.fallFromHeight	skip:java		builder
 DistanceTrigger.TriggerInstance.rideEntityInLava	skip:java		builder
-DistanceTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_distance	the criterion fires from there; its test is the closure given to `trigger`
+DistanceTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements/guest_fall_reset.rs::Game::trigger_distance	the criterion fires from there; its test is the closure given to `trigger`
 EffectsChangedTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_effects_changed	
 EffectsChangedTrigger.TriggerInstance.hasEffects	skip:java		builder
 EffectsChangedTrigger.TriggerInstance.gotEffectsFrom	skip:java		builder
