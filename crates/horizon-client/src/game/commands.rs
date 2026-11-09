@@ -1462,8 +1462,7 @@ impl Game<'_> {
             // A potion's or tipped arrow's own name, over its `item_name`.
             Text::translate(&key, &[])
         } else if item == "minecraft:compass"
-            && s
-                .data()
+            && s.data()
                 .is_some_and(|d| d.other("minecraft:lodestone_tracker").is_some())
         {
             // `CompassItem.getName`: a lodestone tracker names it, over `item_name`.
@@ -1529,18 +1528,6 @@ impl Game<'_> {
         wrapped
             .with_color(color)
             .with_component_fields(vec![("hover_event".into(), shown)])
-    }
-    pub(super) fn item_rarity(&self, item: &str) -> String {
-        static RARITY: std::sync::OnceLock<std::collections::HashMap<String, String>> =
-            std::sync::OnceLock::new();
-        let map = RARITY.get_or_init(|| {
-            horizon_world::item_defaults::read(&self.options.resources)
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|(k, c)| c["minecraft:rarity"].as_str().map(|r| (k, r.to_owned())))
-                .collect()
-        });
-        map.get(item).cloned().unwrap_or_else(|| "common".into())
     }
     fn cmd_give(&mut self, ctx: &Context) -> R<i32> {
         let Some(Arg::Item(ItemInput { id, components, .. })) = ctx.get("item").cloned() else {

@@ -89,6 +89,19 @@ fn matches_name(pattern: &str, name: &str) -> bool {
 }
 
 impl Game<'_> {
+    /// The item's default `minecraft:rarity` ("common" when it has none).
+    pub(in crate::game) fn item_rarity(&self, item: &str) -> String {
+        static RARITY: std::sync::OnceLock<std::collections::HashMap<String, String>> =
+            std::sync::OnceLock::new();
+        let map = RARITY.get_or_init(|| {
+            horizon_world::item_defaults::read(&self.options.resources)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(k, c)| c["minecraft:rarity"].as_str().map(|r| (k, r.to_owned())))
+                .collect()
+        });
+        map.get(item).cloned().unwrap_or_else(|| "common".into())
+    }
     fn owner_of(&mut self, ctx: &Context, prefix: &str, many: bool) -> R<Vec<Owner>> {
         let kind = ctx
             .literals
