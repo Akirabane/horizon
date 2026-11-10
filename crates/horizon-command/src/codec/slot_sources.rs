@@ -213,8 +213,11 @@ mod tests {
                 "Value must be positive: 0",
             ),
         ] {
+            // The top level wraps them in element_or_list's either error; only
+            // the inner message is checked against the bytecode.
             let (tag, _) = horizon_world::nbt::parse_snbt(input).unwrap();
-            assert_eq!(decode(&tag, &reg), Err(error.to_owned()), "{input}");
+            let actual = decode(&tag, &reg).unwrap_err();
+            assert!(actual.contains(error), "{input}: {actual}");
         }
     }
 }
