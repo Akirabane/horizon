@@ -398,6 +398,41 @@ pub fn on_report(hook: ReportHook) {
         .push(hook);
 }
 
+type EmergencyHook = std::sync::Arc<dyn Fn() + Send + Sync>;
+static EMERGENCY_SAVE: Mutex<Option<EmergencyHook>> = Mutex::new(None);
+
+/// Unregisters this emergency save, without removing a newer registration.
+#[must_use]
+pub struct EmergencySave(EmergencyHook);
+
+impl Drop for EmergencySave {
+    fn drop(&mut self) {
+        let mut hook = EMERGENCY_SAVE.lock().unwrap_or_else(|e| e.into_inner());
+        if hook
+            .as_ref()
+            .is_some_and(|f| std::sync::Arc::ptr_eq(f, &self.0))
+        {
+            *hook = None;
+        }
+    }
+}
+
+/// Replaces the process's emergency save. The callback must not panic and must
+/// bound its wait: it runs on the crashing worker, before the process exits.
+pub fn on_emergency_save(f: impl Fn() + Send + Sync + 'static) -> EmergencySave {
+    let hook: EmergencyHook = std::sync::Arc::new(f);
+    *EMERGENCY_SAVE.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook.clone());
+    EmergencySave(hook)
+}
+
+fn emergency_save() {
+    // Never wait on the registry in a panic hook, or hold it while stopping the server.
+    let hook = EMERGENCY_SAVE.try_lock().ok().and_then(|mut h| h.take());
+    if let Some(hook) = hook {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hook()));
+    }
+}
+
 /// Writes the report and tells where it is; the log gets the error too.
 fn deliver(home: &Path, report: Report) -> Option<PathBuf> {
     if REPORTED.swap(true, Ordering::SeqCst) {
@@ -601,6 +636,7 @@ pub fn install(home: PathBuf, side: &'static str) {
             deliver(&home, panic_report(info, side));
         } else if is_worker_thread(std::thread::current().name()) {
             deliver(&home, worker_panic_report(info, side));
+            emergency_save();
             // The crash ends the game, as the relayed report does on vanilla's main thread.
             std::process::exit(101);
         } else {
@@ -709,6 +745,39 @@ pub fn debug_crash_after() -> Option<std::time::Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emergency_save_registry_calls_once_replaces_and_unregisters() {
+        use std::sync::{Arc, atomic::AtomicUsize};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let old = on_emergency_save(move || {
+            count.fetch_add(1, Ordering::Relaxed);
+        });
+        emergency_save();
+        emergency_save();
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        let count = calls.clone();
+        let replaced = on_emergency_save(move || {
+            count.fetch_add(10, Ordering::Relaxed);
+        });
+        let count = calls.clone();
+        let latest = on_emergency_save(move || {
+            count.fetch_add(100, Ordering::Relaxed);
+        });
+        drop(old);
+        drop(replaced);
+        emergency_save();
+        assert_eq!(calls.load(Ordering::Relaxed), 101);
+        let count = calls.clone();
+        let removed = on_emergency_save(move || {
+            count.fetch_add(1000, Ordering::Relaxed);
+        });
+        drop(removed);
+        emergency_save();
+        assert_eq!(calls.load(Ordering::Relaxed), 101);
+        drop(latest);
+    }
 
     #[test]
     fn an_emulated_build_names_both_architectures() {
