@@ -2665,6 +2665,47 @@ mod registered_slot_source_preservation_tests {
             assert_eq!(game.world.game_time, clock);
         }
     }
+
+    /// SlotSources.CODEC is a holder codec: a quoted id is the same reference
+    /// as an unquoted one, and so is a group's single quoted term.
+    /// LimitSlotSource's limit is ExtraCodecs.POSITIVE_INT: a string or 0
+    /// fails to parse, and the command changes nothing.
+    #[test]
+    #[ignore = "needs prepared resources and isolated homes/cwd"]
+    fn quoted_holders_resolve_and_a_non_int_limit_fails_to_parse() {
+        let (mut game, _) = scene("slot-source-quoted-world");
+        let before = game.block_entity_nbt([0, 100, 0]).unwrap();
+        let clock = game.world.game_time;
+        count(&mut game, 3);
+        for source in [
+            r#""parity:first_three""#,
+            r#"{type:"group",terms:"parity:first_three"}"#,
+        ] {
+            assert!(game.run_command("scoreboard players set #q slotprobe -99"));
+            assert!(game.run_command(&format!(
+                "execute store result score #q slotprobe run execute if slots block 0 100 0 {source}"
+            )));
+            assert_eq!(
+                game.score.board.score("#q", "slotprobe").unwrap().value,
+                3,
+                "{source}"
+            );
+        }
+        for limit in [r#""x""#, "0"] {
+            assert!(game.run_command("scoreboard players set #q slotprobe -99"));
+            let command = format!(
+                "execute store result score #q slotprobe run execute if slots block 0 100 0 {{type:\"limit_slots\",limit:{limit},slot_source:{{type:\"slot_range\",slots:\"container.*\"}}}}"
+            );
+            assert!(!game.run_command(&command), "{command}");
+            assert_eq!(
+                game.score.board.score("#q", "slotprobe").unwrap().value,
+                -99,
+                "{command}"
+            );
+        }
+        assert_eq!(game.block_entity_nbt([0, 100, 0]).as_ref(), Some(&before));
+        assert_eq!(game.world.game_time, clock);
+    }
 }
 
 #[cfg(test)]
