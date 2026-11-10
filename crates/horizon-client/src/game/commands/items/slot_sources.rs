@@ -54,10 +54,11 @@ pub(in crate::game) fn expand(store: &DataStore, source: &Value) -> Result<Value
         match kind {
             "group" => {
                 let terms = &source["terms"];
-                let terms = if terms.is_array() || terms.is_string() {
-                    resolve(store, terms, active)?
-                } else {
-                    Value::Array(vec![resolve(store, terms, active)?])
+                // GroupSlotSource's terms are a holder set: a `#tag`, a list,
+                // or one holder (compactListCodec), always a list after.
+                let terms = match resolve(store, terms, active)? {
+                    Value::Array(list) => Value::Array(list),
+                    one => Value::Array(vec![one]),
                 };
                 value["terms"] = terms;
             }
@@ -127,6 +128,19 @@ mod tests {
             json!({"type":"limit_slots","limit":1,"slot_source":{"type":"group","terms":[child,child]}})
         );
         assert_eq!(expand(&store, &json!("#t:twice")).unwrap(), json!([child]));
+        // A group's single holder term is a one-term list, as an inline term is.
+        assert_eq!(
+            expand(&store, &json!({"type":"group","terms":"t:filtered"})).unwrap(),
+            json!({"type":"group","terms":[child]})
+        );
+        assert_eq!(
+            expand(
+                &store,
+                &json!({"type":"group","terms":{"type":"slot_range","slots":"container.0"}})
+            )
+            .unwrap(),
+            json!({"type":"group","terms":[{"type":"slot_range","slots":"container.0"}]})
+        );
         assert!(expand(&store, &json!("t:absent")).is_err());
         store.slot_sources.insert(
             "t:cycle".into(),
