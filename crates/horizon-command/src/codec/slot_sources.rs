@@ -53,8 +53,8 @@ fn positive_int(t: &Tag) -> Result<(), String> {
         Tag::Int(v) => v,
         Tag::Long(v) => v as i32,
         // Java's (int) cast saturates, and NaN becomes 0, as `as` does.
-        Tag::Float(v) => v as i32,
-        Tag::Double(v) => v as i32,
+        Tag::Float(bits) => f32::from_bits(bits) as i32,
+        Tag::Double(bits) => f64::from_bits(bits) as i32,
         _ => return Err("Not a number".into()),
     };
     if value < 1 {
