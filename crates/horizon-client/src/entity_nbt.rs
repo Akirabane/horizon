@@ -3024,7 +3024,7 @@ pub fn ominous_item_spawner_from_nbt(tag: &Tag) -> Option<(crate::items::ItemSta
     Some((item, position(tag)?, after))
 }
 
-/// `ExperienceOrb`: Health, Age, Value, Count.
+/// `ExperienceOrb`: Fire, Health, Age, Value, Count.
 pub fn orb_to_nbt(o: &ExperienceOrb, uuid: [i32; 4]) -> Tag {
     let base = Base {
         id: "minecraft:experience_orb",
@@ -3037,6 +3037,8 @@ pub fn orb_to_nbt(o: &ExperienceOrb, uuid: [i32; 4]) -> Tag {
     };
     let mut tag = base.tag(None);
     for (key, value) in [
+        // Entity.saveWithoutId: `putShort("Fire", (short) remainingFireTicks)`.
+        ("Fire", Tag::Short(o.fire_ticks as i16)),
         ("Health", Tag::Short(o.health as i16)),
         ("Age", Tag::Short(o.age.min(i16::MAX as u32) as i16)),
         ("Value", Tag::Short(o.value as i16)),
@@ -3074,6 +3076,7 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
         // ExperienceOrb's followingPlayer is transient: never saved, so a
         // loaded orb starts without one.
         following: None,
+        fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i16 as i32,
     };
     vec![orb]
 }
@@ -5885,6 +5888,7 @@ mod tests {
             ticks: 0,
             health: 5,
             following: None,
+            fire_ticks: 0,
         };
         let tag = orb_to_nbt(&orb, [0; 4]);
         assert_eq!(tag.get("Fire"), Some(&Tag::Short(0)));
@@ -5963,12 +5967,49 @@ mod tests {
             ticks: 0,
             health: 5,
             following: None,
+            fire_ticks: 0,
         };
         let tag = orb_to_nbt(&o, [0; 4]);
         let back = orbs_from_nbt(&tag);
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].value, 7);
         assert_eq!(back[0].count, 3);
+    }
+    /// `Entity.saveWithoutId` writes `Fire` for every entity and `Entity.load`
+    /// reads it back with `getShortOr("Fire", 0)`: a summon's `Fire:40s` and the
+    /// `-1s` an entity carries after leaving water both survive, an absent key
+    /// is 0, and the short wraps like `(short) remainingFireTicks`.
+    #[test]
+    fn orbs_save_and_load_their_fire() {
+        let mut o = ExperienceOrb {
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            no_gravity: false,
+            id: 0,
+            position: Vec3::new(1.0, 2.0, 3.0),
+            previous: Vec3::ZERO,
+            velocity: Vec3::ZERO,
+            value: 7,
+            age: 3,
+            on_ground: false,
+            count: 1,
+            ticks: 0,
+            health: 5,
+            following: None,
+            fire_ticks: 0,
+        };
+        for (ticks, saved) in [(0, 0), (40, 40), (-1, -1), (300, 300), (40_000, -25_536)] {
+            o.fire_ticks = ticks;
+            let tag = orb_to_nbt(&o, [0; 4]);
+            assert_eq!(tag.get("Fire"), Some(&Tag::Short(saved)), "saved {ticks}");
+            assert_eq!(orbs_from_nbt(&tag)[0].fire_ticks, i32::from(saved));
+        }
+        let mut tag = orb_to_nbt(&o, [0; 4]);
+        let Tag::Compound(map) = &mut tag else {
+            unreachable!()
+        };
+        map.remove(&"Fire".into());
+        assert_eq!(orbs_from_nbt(&tag)[0].fire_ticks, 0);
     }
 }
 

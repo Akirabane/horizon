@@ -505,6 +505,7 @@ impl Game<'_> {
             ticks: 0,
             health: 5,
             following: None,
+            fire_ticks: 0,
         });
         // ServerLevel.addFreshEntity.
         self.native_joins_flush(false, 0);

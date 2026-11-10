@@ -190,6 +190,7 @@ mod tests {
             ticks: 0,
             health: 5,
             following: None,
+            fire_ticks: 0,
         }))
     }
 

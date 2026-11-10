@@ -161,17 +161,18 @@ impl ExperienceOrb {
     /// `Entity.updateFluidInteraction`: refreshes fluid immersion over the
     /// orb's box and pushes its velocity by any water or lava current.
     /// Answers `isEyeInFluid(FluidTags.WATER)` for the eye the scan reads,
-    /// `0.425` above the orb's feet.
-    pub fn update_fluids(&mut self, world: &World, fluids: &FluidResources) -> bool {
-        update_entity_fluids(
+    /// `0.425` above the orb's feet, and whether the orb is in lava
+    /// (`isInLava`, before `Entity.firstTick` is taken into account).
+    pub fn update_fluids(&mut self, world: &World, fluids: &FluidResources) -> (bool, bool) {
+        let (_, lava, eye_in_water) = update_entity_fluids(
             self.bounds(),
             self.position,
             self.position.y + f64::from(0.425f32),
             &mut self.velocity,
             world,
             fluids,
-        )
-        .2
+        );
+        (eye_in_water, lava > 0.0)
     }
 }
 impl ArmorStand {
@@ -485,6 +486,7 @@ mod tests {
             ticks: 0,
             health: 5,
             following: None,
+            fire_ticks: 0,
         };
         let mut still = orb.clone();
         assert!(still.tick(
@@ -575,6 +577,7 @@ mod tests {
             ticks: 0,
             health: 5,
             following: None,
+            fire_ticks: 0,
         };
         assert!(orb.tick(
             &world,
