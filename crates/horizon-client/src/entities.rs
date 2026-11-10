@@ -1380,6 +1380,29 @@ pub struct ExperienceOrb {
     /// `Entity.baseTick`, which hurts the orb once every 20 ticks.
     pub fire_ticks: i32,
 }
+/// A fresh orb as `new ExperienceOrb(level, pos, Vec3.ZERO, 0)` leaves it:
+/// full health, one orb, no fire; spawn sites set the rest.
+impl Default for ExperienceOrb {
+    fn default() -> Self {
+        Self {
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            id: 0,
+            position: Vec3::ZERO,
+            previous: Vec3::ZERO,
+            velocity: Vec3::ZERO,
+            value: 0,
+            age: 0,
+            on_ground: false,
+            count: 1,
+            ticks: 0,
+            health: 5,
+            no_gravity: false,
+            following: None,
+            fire_ticks: 0,
+        }
+    }
+}
 impl ExperienceOrb {
     /// `ExperienceOrb.hurtServer`: the damage comes off the health as an
     /// `int`; an orb at 0 or below is discarded. True when it is gone.
@@ -1541,15 +1564,20 @@ impl ExperienceOrb {
         // `Entity.baseTick`'s fire step, right after the fluid step: an orb is
         // not fire immune, so each 20th tick of a burn hurts it for 1 (out of
         // lava; `isInLava` is false on the first tick). The client only
-        // clears the fire. A burn that empties its health discards it.
+        // `clearFire`s (`min(0, ticks)`). A burn that empties its health discards it.
         let mut burnt_out = false;
         if !server {
-            self.fire_ticks = 0;
-        } else if self.fire_ticks > 0 {
-            if self.fire_ticks % 20 == 0 && !(in_lava && self.ticks > 1) {
-                burnt_out = self.hurt(1.0);
+            self.fire_ticks = self.fire_ticks.min(0);
+        } else {
+            if self.fire_ticks > 0 {
+                if self.fire_ticks % 20 == 0 && !(in_lava && self.ticks > 1) {
+                    burnt_out = self.hurt(1.0);
+                }
+                self.fire_ticks -= 1;
             }
-            self.fire_ticks -= 1;
+            // `Entity.move` ends in `applyEffectsFromBlocks`, which puts an
+            // orb that is not on fire at `-getFireImmuneTicks()`, 0.
+            self.fire_ticks = self.fire_ticks.max(0);
         }
         let block = world.block(
             self.position.x.floor() as i32,
@@ -5119,7 +5147,8 @@ mod orb_lava_tests {
     /// 1 on every tick where the counter is a multiple of 20, and the counter
     /// drops by 1 each tick. `Fire: 100` meets that at 100, 80, 60, 40 and 20,
     /// so the five health are gone on the 81st tick, with 19 fire ticks left.
-    /// A client copy only clears the fire; a fire-free orb stays at 5 health.
+    /// A client copy only clears the fire; a fire-free orb stays at 5 health,
+    /// and a saved `Fire:-5s` is back to 0 after one server tick.
     #[test]
     fn a_burning_server_orb_is_hurt_every_twenty_ticks_and_burns_out() {
         with_fixture(|world, facts, collision, fluids, _| {
@@ -5162,6 +5191,7 @@ mod orb_lava_tests {
             assert!(tick(&mut client, false));
             assert_eq!((client.health, client.fire_ticks), (5, 0));
             let mut cool = sample_orb(at, 5);
+            cool.fire_ticks = -5;
             for _ in 0..40 {
                 assert!(tick(&mut cool, true));
             }

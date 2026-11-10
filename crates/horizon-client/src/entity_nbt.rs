@@ -3037,7 +3037,6 @@ pub fn orb_to_nbt(o: &ExperienceOrb, uuid: [i32; 4]) -> Tag {
     };
     let mut tag = base.tag(None);
     for (key, value) in [
-        // Entity.saveWithoutId: `putShort("Fire", (short) remainingFireTicks)`.
         ("Fire", Tag::Short(o.fire_ticks as i16)),
         ("Health", Tag::Short(o.health as i16)),
         ("Age", Tag::Short(o.age.min(i16::MAX as u32) as i16)),
@@ -3057,7 +3056,6 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
     let Some(position) = position(tag) else {
         return Vec::new();
     };
-    let count = number(tag.get("Count")).unwrap_or(1).max(1) as u32;
     let orb = ExperienceOrb {
         rotation: rotation(tag),
         join: Default::default(),
@@ -3070,11 +3068,10 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
         value: tag.get("Value").and_then(int_value).unwrap_or(0) as i16 as i32,
         age: number(tag.get("Age")).unwrap_or(0).max(0) as u32,
         on_ground: flag(tag, "OnGround"),
-        count,
+        count: number(tag.get("Count")).unwrap_or(1).max(1) as u32,
         ticks: 0,
         health: number(tag.get("Health")).unwrap_or(5) as i32,
-        // ExperienceOrb's followingPlayer is transient: never saved, so a
-        // loaded orb starts without one.
+        // `followingPlayer` is transient: a loaded orb starts without one.
         following: None,
         fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i16 as i32,
     };
