@@ -12,6 +12,7 @@ use horizon_client::{
 use horizon_world::nbt::Tag;
 
 mod contents;
+pub(in crate::game) mod slot_sources;
 use contents::Component;
 
 /// One addressable slot.
@@ -213,15 +214,19 @@ impl Game<'_> {
     }
     /// `ItemCommands.getSlotsFromProvider`: evaluate inline sources against
     /// the accessor's live owner. Named ranges retain their existing adapter.
-    fn command_slots(&mut self, owner: &Owner, raw: &str) -> Vec<Slot> {
-        if raw.starts_with('{') || raw.starts_with('[') {
-            let Ok((tag, _)) = horizon_world::nbt::parse_snbt(raw) else {
-                return Vec::new();
-            };
-            self.inline_slots(owner, &horizon_client::scoreboard::tag_to_json(&tag))
-        } else {
-            self.slots_named(owner, raw)
+    fn command_slots(&mut self, owner: &Owner, raw: &str) -> R<Vec<Slot>> {
+        if let Owner::Block(p) = owner
+            && self.block_container_size(*p).is_none()
+        {
+            return Err(err(
+                "commands.item.source.not_a_container",
+                &[&p[0], &p[1], &p[2]],
+            ));
         }
+        Ok(match self.resolved_slot_source(raw)? {
+            Some(source) => self.inline_slots(owner, &source),
+            None => self.slots_named(owner, raw),
+        })
     }
     /// `SlotCollection.itemCopies` / `size`: transforms apply to the
     /// collection, before a command's item predicate or item modifier.
@@ -243,7 +248,11 @@ impl Game<'_> {
                     .flat_map(|s| self.inline_slots(owner, s))
                     .collect()
             }),
-            "slot_range" => self.slots_named(owner, source["slots"].as_str().unwrap_or_default()),
+            "slot_range" => self
+                .slot_source_owner(owner, source)
+                .map_or_else(Vec::new, |owner| {
+                    self.slots_named(&owner, source["slots"].as_str().unwrap_or_default())
+                }),
             "contents" => {
                 let Some(component) = source["component"].as_str().and_then(Component::named)
                 else {
@@ -280,25 +289,29 @@ impl Game<'_> {
     /// live stack when visited. Limits share the command's TrackingSelector
     /// count across owners and group terms, and count selected empty slots
     /// only for replacement (not modification).
-    fn command_slot_candidates(&mut self, owner: &Owner, raw: &str) -> Vec<SlotCandidate> {
-        let source = horizon_world::nbt::parse_snbt(raw)
-            .ok()
-            .map(|(tag, _)| horizon_client::scoreboard::tag_to_json(&tag));
-        if raw.starts_with('{') || raw.starts_with('[') {
+    fn command_slot_candidates(&mut self, owner: &Owner, raw: &str) -> R<Vec<SlotCandidate>> {
+        if let Owner::Block(p) = owner
+            && self.block_container_size(*p).is_none()
+        {
+            return Err(err(
+                "commands.item.target.not_a_container",
+                &[&p[0], &p[1], &p[2]],
+            ));
+        }
+        if let Some(source) = self.resolved_slot_source(raw)? {
             let mut out = Vec::new();
-            if let Some(source) = source {
-                self.slot_candidates(owner, &source, &[], usize::MAX, &mut out);
-            }
-            out
+            self.slot_candidates(owner, &source, &[], usize::MAX, &mut out);
+            Ok(out)
         } else {
-            self.slots_named(owner, raw)
+            Ok(self
+                .slots_named(owner, raw)
                 .into_iter()
                 .map(|slot| SlotCandidate {
                     slot,
                     filters: Vec::new(),
                     limit: usize::MAX,
                 })
-                .collect()
+                .collect())
         }
     }
     /// `CompositeSlotSource.provide` and `TransformedSlotSource.provide`:
@@ -330,7 +343,10 @@ impl Game<'_> {
                 }
             }
             "slot_range" => {
-                for slot in self.slots_named(owner, source["slots"].as_str().unwrap_or_default()) {
+                let Some(owner) = self.slot_source_owner(owner, source) else {
+                    return;
+                };
+                for slot in self.slots_named(&owner, source["slots"].as_str().unwrap_or_default()) {
                     out.push(SlotCandidate {
                         slot,
                         filters: filters.to_vec(),
@@ -1186,7 +1202,7 @@ impl Game<'_> {
         let mut tracker = Tracker::default();
         let mut selected = 0;
         for o in &targets {
-            let slots = self.command_slot_candidates(o, &slot_name);
+            let slots = self.command_slot_candidates(o, &slot_name)?;
             if slots.is_empty() {
                 if let Owner::Block(p) = o
                     && self.block_container_size(*p).is_none()
@@ -1320,7 +1336,7 @@ impl Game<'_> {
             };
             let mut found = Vec::new();
             for o in &sources {
-                for s in self.command_slots(o, &source_slots) {
+                for s in self.command_slots(o, &source_slots)? {
                     found.push(self.slot_get(&s));
                 }
             }
@@ -1366,7 +1382,7 @@ impl Game<'_> {
         let mut tracker = Tracker::default();
         let mut selected = 0;
         for o in &targets {
-            let slots = self.command_slot_candidates(o, &slot_name);
+            let slots = self.command_slot_candidates(o, &slot_name)?;
             if slots.is_empty() {
                 if let Owner::Block(p) = o
                     && self.block_container_size(*p).is_none()
@@ -1494,24 +1510,6 @@ impl Game<'_> {
         let Some(Arg::Str(slot_name)) = c.get("slots").cloned() else {
             return Ok((false, 0));
         };
-        // SlotSourceArgument keeps literal ranges ahead of registered holders.
-        // Only condition reads resolve named definitions here: the item write
-        // candidate adapters retain their existing supported scope.
-        let registered = if slot_name.starts_with('{')
-            || slot_name.starts_with('[')
-            || horizon_client::command::args::slot_ranges()
-                .iter()
-                .any(|(name, _)| name == &slot_name)
-        {
-            None
-        } else {
-            let id = if slot_name.contains(':') {
-                slot_name.clone()
-            } else {
-                format!("minecraft:{slot_name}")
-            };
-            self.fns.store.slot_sources.get(&id).cloned()
-        };
         let predicate = match c.get("item_predicate") {
             Some(Arg::Item(p)) => Some(p.clone()),
             _ => None,
@@ -1526,10 +1524,7 @@ impl Game<'_> {
                     &[&p[0], &p[1], &p[2]],
                 ));
             }
-            let slots = match &registered {
-                Some(source) => self.inline_slots(&o, source),
-                None => self.command_slots(&o, &slot_name),
-            };
+            let slots = self.command_slots(&o, &slot_name)?;
             if predicate.is_none() {
                 count += slots.len() as i32;
                 continue;
@@ -2618,23 +2613,32 @@ mod registered_slot_source_preservation_tests {
 
     #[test]
     #[ignore = "needs prepared resources and isolated homes/cwd"]
-    fn admitted_item_arguments_still_fail_without_writing_or_player_fallback() {
+    fn admitted_absent_executor_sources_fail_without_player_fallback() {
         let (mut game, _) = scene("slot-source-unsupported-world");
+        let path = game
+            .world_root
+            .join("datapacks/parity/data/parity/slot_source/this.json");
+        std::fs::write(
+            path,
+            r#"{"type":"minecraft:slot_range","source":"this","slots":"weapon.mainhand"}"#,
+        )
+        .unwrap();
+        game.reload_datapacks(true);
         let before = game.block_entity_nbt([0, 100, 0]).unwrap();
         let clock = game.world.game_time;
         count(&mut game, 3);
         let player_was_present = game.player.is_some();
-        println!("unsupported registered item routes: actual Player present={player_was_present}");
+        println!("absent executor: actual Player present={player_was_present}");
         let mut commands = vec![
-            "item modify block 0 100 0 parity:first_three {type:\"minecraft:set_count\",count:1}"
+            "item modify block 0 100 0 parity:this {type:\"minecraft:set_count\",count:1}"
                 .to_owned(),
         ];
         for mode in ["replace", "fill", "override"] {
             commands.push(format!(
-                "item {mode} block 0 100 0 parity:first_three with diamond"
+                "item {mode} block 0 100 0 parity:this with diamond"
             ));
             commands.push(format!(
-                "item {mode} block 0 100 0 container.0 from block 0 100 0 parity:first_three"
+                "item {mode} block 0 100 0 container.0 from block 0 100 0 parity:this"
             ));
         }
         for command in commands {
@@ -2650,7 +2654,7 @@ mod registered_slot_source_preservation_tests {
             );
             assert!(
                 !game.run_command(&command),
-                "unsupported registered write must fail: {command}"
+                "absent executor must not fall back to a Player: {command}"
             );
             assert_eq!(
                 game.block_entity_nbt([0, 100, 0]).as_ref(),
@@ -2662,3 +2666,6 @@ mod registered_slot_source_preservation_tests {
         }
     }
 }
+
+#[cfg(test)]
+include!("items/registered_source_qualification_v2_tests.rs");
