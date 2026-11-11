@@ -25,6 +25,48 @@ struct Fake {
     remove_gate: Arc<AtomicBool>,
     /// `map` panics: the thread of the job dies.
     map_panics: Arc<AtomicBool>,
+    /// Time that passes (on `clock`) while `map` and `renew` wait for the router.
+    takes_millis: Arc<std::sync::atomic::AtomicU64>,
+    clock: Option<FakeClock>,
+    /// `renew` waits until this is set (it starts set), like `remove_gate`.
+    renew_gate: Arc<AtomicBool>,
+}
+
+/// A clock the tests move by hand, so that a call that "takes five seconds" does not sleep.
+#[derive(Clone)]
+struct FakeClock {
+    base: Instant,
+    millis: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl FakeClock {
+    fn new() -> Self {
+        Self {
+            base: Instant::now(),
+            millis: Arc::default(),
+        }
+    }
+    fn now(&self) -> Instant {
+        self.base + Duration::from_millis(self.millis.load(Ordering::SeqCst))
+    }
+    fn advance(&self, by: Duration) {
+        self.millis
+            .fetch_add(by.as_millis() as u64, Ordering::SeqCst);
+    }
+    /// `secs` after the start.
+    fn at(&self, secs: u64) -> Instant {
+        self.base + Duration::from_secs(secs)
+    }
+    /// It is `secs` after the start.
+    fn set(&self, secs: u64) {
+        self.millis.store(secs * 1000, Ordering::SeqCst);
+    }
+}
+
+/// The hold's thread looks at the time `secs` after the start.
+fn tick_at<G: Gateway>(hold: &mut Hold<G>, clock: &FakeClock, secs: u64) -> bool {
+    clock.set(secs);
+    hold.tick(clock.at(secs))
 }
 
 impl Fake {
@@ -37,6 +79,9 @@ impl Fake {
             renew_fails: Arc::default(),
             remove_gate: Arc::new(AtomicBool::new(true)),
             map_panics: Arc::default(),
+            takes_millis: Arc::default(),
+            clock: None,
+            renew_gate: Arc::new(AtomicBool::new(true)),
         }
     }
     fn calls(&self) -> Vec<Call> {
@@ -44,6 +89,18 @@ impl Fake {
     }
     fn log(&self, call: Call) {
         self.calls.lock().unwrap().push(call);
+    }
+    /// From now on a call takes five seconds.
+    fn calls_take_five_seconds_from_now_on(&self) {
+        self.takes_millis.store(5000, Ordering::SeqCst);
+    }
+    /// A call that takes `takes` of the fake clock's time.
+    fn wait_for_the_router(&self) {
+        if let Some(clock) = &self.clock {
+            clock.advance(Duration::from_millis(
+                self.takes_millis.load(Ordering::SeqCst),
+            ));
+        }
     }
     /// Hold every removal until [`Fake::release`].
     fn hold_removals(&self) {
@@ -70,6 +127,7 @@ impl Gateway for Fake {
     type Mapping = Granted;
     fn map(&mut self, port: u16) -> Result<Granted, Failure> {
         self.log(Call::Map(port));
+        self.wait_for_the_router();
         assert!(
             !self.map_panics.load(Ordering::SeqCst),
             "the gateway fell over"
@@ -84,6 +142,11 @@ impl Gateway for Fake {
     }
     fn renew(&mut self, m: &mut Granted) -> Result<(), Failure> {
         self.log(Call::Renew(m.internal));
+        self.wait_for_the_router();
+        let end = Instant::now() + Duration::from_secs(10);
+        while !self.renew_gate.load(Ordering::SeqCst) && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         if self.renew_fails.load(Ordering::SeqCst) {
             Err(Failure::Router("the router stopped answering".into()))
         } else {
@@ -253,34 +316,85 @@ fn a_router_that_refuses_says_why_and_has_nothing_to_remove() {
 
 #[test]
 fn a_failed_opening_is_shown_and_asked_again_after_a_minute() {
-    let fake = Fake::new();
+    let clock = FakeClock::new();
+    let mut fake = Fake::new();
     fake.map_fails.store(true, Ordering::SeqCst);
-    let mut hold = Hold::new(fake.clone(), 25565);
-    let start = Instant::now();
-    hold.open_at(start);
+    fake.clock = Some(clock.clone());
+    let at = clock.clone();
+    let mut hold = Hold::with_clock(fake.clone(), 25565, move || at.now());
+    hold.open();
     assert_eq!(*hold.state(), State::Failed(refusal()));
     // Not again within the minute, however often the thread looks.
     for secs in [1, 20, 59] {
-        assert!(!hold.tick(start + Duration::from_secs(secs)));
+        assert!(!hold.tick(clock.at(secs)));
     }
     assert_eq!(fake.calls(), [Call::Map(25565)]);
     // After it, the router still says no: shown the same, and another minute is waited.
-    assert!(!hold.tick(start + Duration::from_secs(61)));
-    assert!(!hold.tick(start + Duration::from_secs(100)));
+    assert!(!tick_at(&mut hold, &clock, 61));
+    assert!(!tick_at(&mut hold, &clock, 100));
     assert_eq!(fake.calls(), [Call::Map(25565), Call::Map(25565)]);
     // Then it answers (the network came up): open, and kept.
     fake.map_fails.store(false, Ordering::SeqCst);
-    assert!(hold.tick(start + Duration::from_secs(122)));
+    assert!(tick_at(&mut hold, &clock, 122));
     assert_eq!(*hold.state(), open_as_granted());
     assert_eq!(
         fake.calls(),
         [Call::Map(25565), Call::Map(25565), Call::Map(25565)]
     );
     // An open mapping is not asked for again.
-    assert!(!hold.tick(start + Duration::from_secs(500)));
+    assert!(!tick_at(&mut hold, &clock, 500));
     assert_eq!(fake.calls().len(), 3);
     hold.close();
     assert_eq!(fake.calls().last(), Some(&Call::Remove(25565)));
+}
+
+/// A router call that fails after waiting five seconds for an answer: the minute before the next
+/// try runs from when the failure came back, so it is 65 seconds after the call began, not 60.
+#[test]
+fn the_minute_after_a_failure_starts_when_the_failed_call_is_over() {
+    let clock = FakeClock::new();
+    let mut fake = Fake::new();
+    fake.map_fails.store(true, Ordering::SeqCst);
+    fake.clock = Some(clock.clone());
+    fake.takes_millis.store(5000, Ordering::SeqCst);
+    let at = clock.clone();
+    let mut hold = Hold::with_clock(fake.clone(), 25565, move || at.now());
+    hold.open();
+    assert_eq!(fake.calls(), [Call::Map(25565)]);
+    // 64 s after the call began is 59 s after it failed: still inside the minute.
+    assert!(!tick_at(&mut hold, &clock, 64));
+    assert_eq!(fake.calls().len(), 1);
+    // 65 s is the minute: asked again (and fails again, after another five seconds).
+    assert!(!tick_at(&mut hold, &clock, 65));
+    assert_eq!(fake.calls().len(), 2);
+    // That failure came back at 70 s: the next try is at 130 s, not at 125 s.
+    assert!(!tick_at(&mut hold, &clock, 129));
+    assert_eq!(fake.calls().len(), 2);
+    assert!(!tick_at(&mut hold, &clock, 130));
+    assert_eq!(fake.calls().len(), 3);
+}
+
+/// The same for a renewal that waits five seconds and fails.
+#[test]
+fn the_minute_after_a_failed_renewal_starts_when_the_renewal_is_over() {
+    let clock = FakeClock::new();
+    let mut fake = Fake::new();
+    fake.clock = Some(clock.clone());
+    let at = clock.clone();
+    let mut hold = Hold::with_clock(fake.clone(), 25565, move || at.now());
+    hold.open();
+    fake.due.store(true, Ordering::SeqCst);
+    fake.renew_fails.store(true, Ordering::SeqCst);
+    fake.calls_take_five_seconds_from_now_on();
+    assert!(tick_at(&mut hold, &clock, 0));
+    // The renewal began at 0 and came back at 5 s: the retry is at 65 s.
+    assert!(!tick_at(&mut hold, &clock, 64));
+    assert_eq!(fake.calls(), [Call::Map(25565), Call::Renew(25565)]);
+    tick_at(&mut hold, &clock, 65);
+    assert_eq!(
+        fake.calls(),
+        [Call::Map(25565), Call::Renew(25565), Call::Renew(25565)]
+    );
 }
 
 #[test]
@@ -740,4 +854,117 @@ fn a_job_that_ended_by_itself_is_started_again_while_its_server_is_wanted() {
             == 2
     });
     jobs.stop_all(Duration::from_secs(10));
+}
+
+#[test]
+fn a_restart_that_took_another_port_is_followed_but_a_port_saved_while_running_is_not() {
+    let dir = PathBuf::from("a");
+    let mut jobs = Jobs::default();
+    let on = std::slice::from_ref(&dir);
+    jobs.note_port(&dir, Some(25565), false);
+    assert_eq!(jobs.wanted(true, on), [(dir.clone(), 25565)]);
+    // Saved while it runs: its next start's, as before.
+    jobs.note_port(&dir, Some(25570), true);
+    assert_eq!(jobs.wanted(true, on), [(dir.clone(), 25565)]);
+    // `horizon-server restart` took 25570 with no stopped phase: once the launcher says the server
+    // started again, the next read of a running server's port is the one it listens on now...
+    jobs.server_restarted(&dir);
+    jobs.note_port(&dir, Some(25570), true);
+    assert_eq!(jobs.wanted(true, on), [(dir.clone(), 25570)]);
+    // ...and only that read: another one saved while it runs waits for the next start again.
+    jobs.note_port(&dir, Some(25999), true);
+    assert_eq!(jobs.wanted(true, on), [(dir.clone(), 25570)]);
+    // A restart with the port unchanged changes nothing.
+    jobs.server_restarted(&dir);
+    jobs.note_port(&dir, Some(25570), true);
+    assert_eq!(jobs.wanted(true, on), [(dir, 25570)]);
+}
+
+#[test]
+fn a_server_taking_over_a_port_waits_for_the_removal_of_the_one_that_left_it() {
+    let fake = Fake::new();
+    let start = |_: &Path, port: u16, before: Vec<Previous>| job(&fake, port, before);
+    let mut jobs = Jobs::default();
+    let (a, b) = (PathBuf::from("a"), PathBuf::from("b"));
+    jobs.sync(&[(a.clone(), 26020)], start);
+    until("the mapping", || {
+        matches!(jobs.state(&a), Some(State::Open { .. }))
+    });
+    fake.hold_removals();
+    jobs.sync(&[], start);
+    // Another server directory, the same TCP port, while a's removal is still going: its
+    // mapping is the same one on the router, so a late removal would take it away.
+    jobs.sync(&[(b.clone(), 26020)], start);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(fake.calls(), [Call::Map(26020)]);
+    fake.release();
+    until("b's mapping", || {
+        fake.calls()
+            .iter()
+            .filter(|c| **c == Call::Map(26020))
+            .count()
+            == 2
+    });
+    assert_eq!(
+        fake.calls(),
+        [Call::Map(26020), Call::Remove(26020), Call::Map(26020)]
+    );
+    jobs.stop_all(Duration::from_secs(10));
+}
+
+#[test]
+fn a_server_on_another_port_does_not_wait_for_a_removal_it_does_not_share() {
+    let fake = Fake::new();
+    let start = |_: &Path, port: u16, before: Vec<Previous>| job(&fake, port, before);
+    let mut jobs = Jobs::default();
+    let (a, b) = (PathBuf::from("a"), PathBuf::from("b"));
+    jobs.sync(&[(a.clone(), 26021)], start);
+    until("the mapping", || {
+        matches!(jobs.state(&a), Some(State::Open { .. }))
+    });
+    fake.hold_removals();
+    jobs.sync(&[], start);
+    jobs.sync(&[(b.clone(), 26022)], start);
+    until("b's mapping", || {
+        matches!(jobs.state(&b), Some(State::Open { .. }))
+    });
+    assert_eq!(fake.calls(), [Call::Map(26021), Call::Map(26022)]);
+    fake.release();
+    jobs.stop_all(Duration::from_secs(10));
+}
+
+/// Closing while a job is blocked on a router call: the launcher waits for that call and then for
+/// the removal, instead of letting the process end before the removal is sent.
+#[test]
+fn closing_the_launcher_waits_for_a_renewal_that_is_blocked_on_the_router_and_then_removes() {
+    let fake = Fake::new();
+    let start = |_: &Path, port: u16, before: Vec<Previous>| job(&fake, port, before);
+    let mut jobs = Jobs::default();
+    let dir = PathBuf::from("a");
+    jobs.sync(&[(dir.clone(), 26030)], start);
+    until("the mapping", || {
+        matches!(jobs.state(&dir), Some(State::Open { .. }))
+    });
+    // The lease is due and the router does not answer the renewal.
+    fake.renew_gate.store(false, Ordering::SeqCst);
+    fake.due.store(true, Ordering::SeqCst);
+    until("the renewal to begin", || {
+        fake.calls().contains(&Call::Renew(26030))
+    });
+    let gate = fake.renew_gate.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        gate.store(true, Ordering::SeqCst);
+    });
+    jobs.stop_all(Duration::from_secs(10));
+    // Not returned early: the removal was sent after the blocked renewal came back.
+    let calls = fake.calls();
+    assert_eq!(calls.first(), Some(&Call::Map(26030)), "{calls:?}");
+    assert_eq!(calls.last(), Some(&Call::Remove(26030)), "{calls:?}");
+}
+
+/// The wait at close covers one blocked router call and then the removal.
+#[test]
+fn the_wait_at_close_covers_a_blocked_call_and_a_removal() {
+    assert!(QUIT_WAIT >= ROUTER_CALL * 2, "{QUIT_WAIT:?}");
 }

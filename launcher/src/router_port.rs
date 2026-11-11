@@ -5,7 +5,8 @@
 //! `horizon_friends::portmap` (PCP, NAT-PMP, then UPnP IGD; the same code Play with Friends uses),
 //! renewed when the lease is due, and removed when the server stops, the switch goes off or the
 //! launcher closes. The launcher removes the mapping when it closes normally, a server that keeps
-//! running as a background service included. After a crash nothing removes it: the router's lease
+//! running as a background service included; it waits [`QUIT_WAIT`] for the routers, long enough
+//! for a call already blocked on one and then the removal. After a crash nothing removes it: the router's lease
 //! ends it (an hour), except on a router that only gives permanent UPnP leases, where `portmap`
 //! asks for none and the mapping stays until it is removed.
 //!
@@ -34,8 +35,14 @@ const ALIVE_EVERY: Duration = Duration::from_secs(15);
 /// How many of those answers in a row must say "no" before the job ends: one busy moment of the
 /// server's control API must not take the port away.
 const ALIVE_MISSES: u32 = 2;
-/// How long closing the launcher waits for the mappings to be removed.
-pub const QUIT_WAIT: Duration = Duration::from_secs(4);
+/// The longest one router call takes in `portmap`: a UPnP request connects within 3 s and waits
+/// 5 s for the answer (`portmap.rs`, `http`).
+const ROUTER_CALL: Duration = Duration::from_secs(8);
+/// How long closing the launcher waits for the mappings to be removed: a renewal that is already
+/// blocked on the router when the launcher closes, then the removal, each one router call. A job
+/// looks at its stop request only between calls, so a shorter wait could let the process end
+/// before the removal was even sent.
+pub const QUIT_WAIT: Duration = Duration::from_secs(ROUTER_CALL.as_secs() * 2 + 4);
 
 /// Why the router did not open the port. The page turns [`Failure::NoPrivateAddress`] into its
 /// own translated sentence; the other two carry text that is not the launcher's: `portmap`'s
@@ -154,18 +161,27 @@ pub struct Hold<G: Gateway> {
     port: u16,
     mapping: Option<G::Mapping>,
     state: State,
-    /// Nothing is asked of the router before this, after a failed opening or renewal.
+    /// Nothing is asked of the router before this, after a failed opening or renewal: a minute
+    /// from when the failed call came back, not from when it began (a UPnP call can wait 5 s).
     retry_at: Option<Instant>,
+    /// The time a failed call is over; the real clock but in tests.
+    clock: Box<dyn Fn() -> Instant + Send>,
 }
 
 impl<G: Gateway> Hold<G> {
     pub fn new(gateway: G, port: u16) -> Self {
+        Self::with_clock(gateway, port, Instant::now)
+    }
+
+    /// A hold that reads the time a failed call is over from `clock`.
+    pub fn with_clock(gateway: G, port: u16, clock: impl Fn() -> Instant + Send + 'static) -> Self {
         Self {
             gateway,
             port,
             mapping: None,
             state: State::Asking,
             retry_at: None,
+            clock: Box::new(clock),
         }
     }
 
@@ -175,10 +191,6 @@ impl<G: Gateway> Hold<G> {
 
     /// Ask the router to open the port (blocks for as long as the router takes).
     pub fn open(&mut self) {
-        self.open_at(Instant::now());
-    }
-
-    fn open_at(&mut self, now: Instant) {
         match self.gateway.map(self.port) {
             Ok(mapping) => {
                 self.state = self.shown(&mapping);
@@ -187,7 +199,7 @@ impl<G: Gateway> Hold<G> {
             }
             Err(why) => {
                 self.state = State::Failed(why);
-                self.retry_at = Some(now + RETRY);
+                self.retry_at = Some((self.clock)() + RETRY);
             }
         }
     }
@@ -211,7 +223,7 @@ impl<G: Gateway> Hold<G> {
         let Some(mapping) = self.mapping.as_mut() else {
             // Nothing was opened, or the opening failed: only a failure is asked again.
             if self.retry_at.is_some() {
-                self.open_at(now);
+                self.open();
             }
             return self.state != before;
         };
@@ -225,7 +237,7 @@ impl<G: Gateway> Hold<G> {
                 self.state = self.shown(mapping);
             }
             Err(why) => {
-                self.retry_at = Some(now + RETRY);
+                self.retry_at = Some((self.clock)() + RETRY);
                 self.state = State::Failed(why);
             }
         }
@@ -388,24 +400,36 @@ pub struct Jobs {
     jobs: HashMap<PathBuf, Job>,
     /// Stopped jobs whose threads are still telling the router. Closing the launcher waits for
     /// them too, and a new job for the same server waits for its predecessor.
-    stopping: Vec<(PathBuf, Job)>,
+    stopping: Vec<Job>,
     ports: HashMap<PathBuf, u16>,
+    /// Servers that started again: the next port read for each is the one they started with.
+    restarted: std::collections::HashSet<PathBuf>,
 }
 
 impl Jobs {
+    /// The server started again (a new engine took `server.toml`, as `horizon-server restart` does
+    /// with no stopped phase in between): the next port read for it is the one it now listens on,
+    /// even though it is running. Until then the port it had is kept.
+    pub fn server_restarted(&mut self, dir: &Path) {
+        self.restarted.insert(dir.to_path_buf());
+    }
+
     /// What a server's settings say its port is; `None` when they could not be read. A running
     /// server keeps the port it started with: one saved meanwhile is its next start's, and says
     /// nothing about the port the router needs. A stopped server's unreadable settings leave it
     /// with no known port, so nothing is guessed for it.
     pub fn note_port(&mut self, dir: &Path, port: Option<u16>, running: bool) {
         match port {
-            Some(port) if !running || !self.ports.contains_key(dir) => {
-                self.ports.insert(dir.to_path_buf(), port);
+            Some(port) => {
+                let restarted = self.restarted.remove(dir);
+                if restarted || !running || !self.ports.contains_key(dir) {
+                    self.ports.insert(dir.to_path_buf(), port);
+                }
             }
             None if !running => {
                 self.ports.remove(dir);
             }
-            _ => {}
+            None => {}
         }
     }
 
@@ -438,17 +462,20 @@ impl Jobs {
                 self.jobs.insert(dir, job);
             } else if !job.finished() {
                 job.stop();
-                self.stopping.push((dir, job));
+                self.stopping.push(job);
             }
         }
-        self.stopping.retain(|(_, job)| !job.finished());
+        self.stopping.retain(|job| !job.finished());
         for (dir, port) in wanted {
             if !self.jobs.contains_key(dir) {
+                // Every stopped job still removing a mapping of this port, whichever server it
+                // was for: two servers on one port share the router's mapping, and a removal
+                // landing after the new opening would take it away.
                 let before = self
                     .stopping
                     .iter()
-                    .filter(|(d, _)| d == dir)
-                    .map(|(_, job)| job.previous())
+                    .filter(|job| job.port() == *port)
+                    .map(Job::previous)
                     .collect();
                 self.jobs.insert(dir.clone(), start(dir, *port, before));
             }
@@ -463,7 +490,7 @@ impl Jobs {
     /// stopped earlier included.
     pub fn stop_all(&mut self, wait: Duration) {
         let mut jobs: Vec<Job> = self.jobs.drain().map(|(_, job)| job).collect();
-        jobs.extend(self.stopping.drain(..).map(|(_, job)| job));
+        jobs.append(&mut self.stopping);
         for job in &jobs {
             job.stop();
         }
@@ -478,6 +505,13 @@ static JOBS: Mutex<Option<Jobs>> = Mutex::new(None);
 
 fn jobs() -> std::sync::MutexGuard<'static, Option<Jobs>> {
     JOBS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The server started again (see [`Jobs::server_restarted`]).
+pub fn server_restarted(dir: &Path) {
+    jobs()
+        .get_or_insert_with(Jobs::default)
+        .server_restarted(dir);
 }
 
 /// What a server's settings say its port is (see [`Jobs::note_port`]).
