@@ -7585,14 +7585,17 @@ def dispensed_item_escape():
 
 def item_frame_rotation():
     """#13848: `ItemFrame.setDirection` turns a frame with its facing (`yRot` from the 2D data value on a wall,
-    `xRot` 90 or -90 on a floor or ceiling), and `Entity.saveWithoutId` writes it as `Rotation`."""
-    x0, y0, z0 = 4096 - 160, 260, 3648
+    `xRot` 90 or -90 on a floor or ceiling), and `Entity.saveWithoutId` writes it as `Rotation`. A `Facing` out of
+    0..5 is `Direction.from3DDataValue`'s `abs(data % 6)`. Away from other groups: a forced chunk two columns
+    from another's keeps that one loaded but not ticking when it starts."""
+    x0, y0, z0 = 3200, 260, 3712
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
            cmd(f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 3} {z0 + 15} stone', False)]
     frames = [('glow_item_frame', ''), ('item_frame', ',Facing:1b'), ('item_frame', ',Facing:2b'),
-              ('item_frame', ',Facing:3b'), ('glow_item_frame', ',Facing:4b'), ('item_frame', ',Facing:5b')]
+              ('item_frame', ',Facing:3b'), ('glow_item_frame', ',Facing:4b'), ('item_frame', ',Facing:5b'),
+              ('item_frame', ',Facing:7b'), ('item_frame', ',Facing:-1b')]
     for n, (kind, facing) in enumerate(frames, 1):
-        x = x0 + 2 * n
+        x = x0 + 1 + n
         ops += [cmd(f'/setblock {x} {y0 + 5} {z0 + 8} air', False),
                 cmd(f'/summon {kind} {x}.5 {y0 + 5}.5 {z0 + 8}.5 {{UUID:[I;14100,0,{n},1],Fixed:1b{facing}}}',
                     expect_result=1),

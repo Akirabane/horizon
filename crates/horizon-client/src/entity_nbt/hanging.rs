@@ -101,13 +101,15 @@ pub fn item_frame_to_nbt(f: &ItemFrame, uuid: [i32; 4], raw: Option<&Tag>) -> Ta
     }
     tag
 }
-/// `ItemFrame.readAdditionalSaveData`: an absent Facing defaults to Direction.DOWN.
+/// `ItemFrame.readAdditionalSaveData`: an absent Facing defaults to Direction.DOWN;
+/// `Direction.LEGACY_ID_CODEC` reads a byte and `from3DDataValue` takes
+/// `Mth.abs(data % 6)`, so 7 is up and -1 is up too.
 pub fn item_frame_from_nbt(tag: &Tag, id: u32) -> Option<ItemFrame> {
     let pos = attached_block_pos(tag)?;
     Some(ItemFrame {
         id,
         pos,
-        facing: number(tag.get("Facing")).unwrap_or(0).clamp(0, 5) as u8,
+        facing: ((number(tag.get("Facing")).unwrap_or(0) as i8) % 6).unsigned_abs(),
         glow: kind(tag).as_deref() == Some("minecraft:glow_item_frame"),
         item: tag
             .get("Item")
