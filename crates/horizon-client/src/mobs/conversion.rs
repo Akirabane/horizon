@@ -68,9 +68,11 @@ pub fn single(from: &Mob, to: &mut Mob, params: Params) {
 }
 
 /// `ConversionType.convertCommon`, what every conversion carries over (`SINGLE` and `SPLIT_ON_DEATH`):
-/// effects, babyhood and age, the flags, the custom name. `preserve_can_pick_up_loot` is the params'
-/// `preserveCanPickUpLoot`.
+/// absorption, effects, babyhood and age, the flags, the custom name. `preserve_can_pick_up_loot`
+/// is the params' `preserveCanPickUpLoot`.
 pub fn common(from: &Mob, to: &mut Mob, preserve_can_pick_up_loot: bool) {
+    // convertCommon, in its order: the absorption first, then the effects.
+    to.absorption = from.absorption;
     to.extra.effects = from.extra.effects.clone();
     to.extra.effect_fallbacks = from.extra.effect_fallbacks.clone();
     to.extra.hidden_effects = from.extra.hidden_effects.clone();
@@ -173,6 +175,26 @@ mod tests {
             );
             assert!(bare.extra.main_hand.is_none() && bare.extra.chest.is_none());
             assert_eq!(bare.custom_name.as_deref(), Some("Frosty"));
+        });
+    }
+    /// `ConversionType.convertCommon` copies `getAbsorptionAmount`, so the
+    /// golden hearts an apple left on a zombie survive its turn into a drowned.
+    #[test]
+    fn a_converting_mob_keeps_its_absorption() {
+        with_test_world(&[], |_, types| {
+            let mob = |id, kind: &str| {
+                Mob::new(
+                    id,
+                    Arc::new(types.types[kind].clone()),
+                    Vec3::new(3.5, 70.0, -2.5),
+                    0.0,
+                )
+            };
+            let mut z = mob(1, "minecraft:zombie");
+            z.absorption = 3.0;
+            let mut d = mob(2, "minecraft:drowned");
+            single(&z, &mut d, Params::KEEP_ALL);
+            assert_eq!(d.absorption, 3.0, "the absorption crosses the conversion");
         });
     }
 }
