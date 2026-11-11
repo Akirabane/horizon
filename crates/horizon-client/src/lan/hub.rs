@@ -5124,6 +5124,7 @@ impl Hub {
     /// closes once its chunk is in) and TeleportTransition.PLAY_PORTAL_SOUND.
     pub fn land(&mut self, i: usize, at: [f64; 3]) {
         self.guests[i].landing = false;
+        self.guests[i].place(at); // added to the new level at the exit
         self.teleport(i, Some(at));
         let g = &self.guests[i];
         g.send(&C::GameEvent(play::GameEvent {

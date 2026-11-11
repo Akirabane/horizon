@@ -59,6 +59,7 @@ if __name__ == '__main__':
         del sys.argv[i:i + 2]
     # The oracle's player stands at the origin, never placed at the world spawn.
     os.environ.setdefault('HORIZON_HARNESS_OWNER_ORIGIN', '1')
+    os.environ.setdefault('HORIZON_HARNESS_SILENT_TELEPORT', '1')
     # Its default PlayerList clamps the simulation distance to the valid minimum, 2.
     os.environ.setdefault('HORIZON_HARNESS_LOADED_FIXTURE', '1')
     if '--work-dir' not in sys.argv:

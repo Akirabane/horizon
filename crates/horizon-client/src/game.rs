@@ -104,6 +104,7 @@ mod code_of_conduct;
 mod combat;
 mod command_blocks;
 mod command_harness;
+use command_harness::silent_teleport;
 mod command_minecarts;
 mod commands;
 mod composter;

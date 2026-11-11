@@ -46,15 +46,19 @@ pub(super) fn spans(text: &Text) -> Value {
     Value::Array(out.into_iter().map(|(t, s)| json!([t, s])).collect())
 }
 
+/// `HORIZON_HARNESS_SILENT_TELEPORT`, read once.
+pub(super) fn silent_teleport() -> bool {
+    static SILENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SILENT.get_or_init(|| std::env::var_os("HORIZON_HARNESS_SILENT_TELEPORT").is_some())
+}
+
 impl Game<'_> {
-    /// Pump the real client's connection, without predicting movement: the
-    /// oracle's player stays where commands put it. Errors cross the server
-    /// boundary through Integrated::stop, including script and save failures.
-    /// `ServerboundAcceptTeleportationPacket`. The oracle's player never
-    /// answers a teleport (so its `handleAcceptTeleportPacket` never calls
-    /// `ServerChunkCache.move`); the command harness's client stays silent too.
+    /// `ServerboundAcceptTeleportationPacket`. A program that sets
+    /// `HORIZON_HARNESS_SILENT_TELEPORT` compares against an oracle whose
+    /// player never answers a teleport (so its `handleAcceptTeleportPacket`
+    /// never calls `ServerChunkCache.move`): the harness's client stays silent.
     pub(super) fn send_teleport_acceptance(&mut self, packet: play::AcceptTeleportation) {
-        if std::env::var_os("HORIZON_COMMAND_SCRIPT").is_none() {
+        if !silent_teleport() {
             self.send(S::AcceptTeleportation(packet));
         }
     }
@@ -80,6 +84,9 @@ impl Game<'_> {
         host.hub.teleport(i, None);
         Ok(())
     }
+    /// Pump the real client's connection, without predicting movement: the
+    /// oracle's player stays where commands put it. Errors cross the server
+    /// boundary through Integrated::stop, including script and save failures.
     pub(super) fn wait_command_harness(&mut self) -> Result<()> {
         let server = self.integrated.take().ok_or("command harness: no server")?;
         let client_config = std::env::var_os("HORIZON_HARNESS_CLIENT_CONFIG");

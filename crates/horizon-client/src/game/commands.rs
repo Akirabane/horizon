@@ -1725,7 +1725,8 @@ impl Game<'_> {
                 }
                 let from = self.player.as_ref().map(|p| p.position);
                 if let Some(p) = self.player.as_mut() {
-                    self.tickets.hold_player(p.position, v);
+                    self.tickets
+                        .hold_player(p.position, v, super::silent_teleport());
                     p.position = v;
                     p.velocity = Vec3::new(0.0, 0.0, 0.0);
                     p.fall_distance = 0.0;

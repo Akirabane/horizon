@@ -262,8 +262,13 @@ impl ChunkTickets {
     /// `ServerGamePacketListenerImpl.teleport` does not call
     /// `ServerChunkCache.move`: a player put at `to` keeps the tickets of the
     /// chunk it was in (the first one held, if teleported again) until its
-    /// next move.
-    pub fn hold_player(&mut self, from: Vec3, to: Vec3) {
+    /// next move. The local player's client answers within a tick, which
+    /// moves them again, so only a `silent` one (a harness whose oracle never
+    /// answers) holds.
+    pub fn hold_player(&mut self, from: Vec3, to: Vec3, silent: bool) {
+        if !silent {
+            return;
+        }
         let chunk = self.player_chunk([from.x, from.z]);
         self.held = Some((chunk, [to.x, to.z]));
     }
@@ -581,14 +586,21 @@ mod tests {
     fn a_teleported_player_keeps_its_old_tickets_until_it_moves() {
         let mut t = ChunkTickets::default();
         assert_eq!(t.player_chunk([8.5, 8.5]), (0, 0));
-        t.hold_player(Vec3::new(8.5, 0.0, 8.5), Vec3::new(104.5, 0.0, 11.5));
+        t.hold_player(Vec3::new(8.5, 0.0, 8.5), Vec3::new(104.5, 0.0, 11.5), true);
         assert_eq!(t.player_chunk([104.5, 11.5]), (0, 0));
         // Teleported again: the chunk of the last accepted move still holds.
-        t.hold_player(Vec3::new(104.5, 0.0, 11.5), Vec3::new(200.5, 0.0, 11.5));
+        t.hold_player(
+            Vec3::new(104.5, 0.0, 11.5),
+            Vec3::new(200.5, 0.0, 11.5),
+            true,
+        );
         assert_eq!(t.player_chunk([200.5, 11.5]), (0, 0));
         // Falling does not move x or z; a move does.
         assert_eq!(t.player_chunk([200.5, 12.5]), (12, 0));
         assert_eq!(t.player_chunk([200.5, 11.5]), (12, 0));
+        // A client that answers (real play) moves them at once.
+        t.hold_player(Vec3::new(8.5, 0.0, 8.5), Vec3::new(104.5, 0.0, 11.5), false);
+        assert_eq!(t.player_chunk([104.5, 11.5]), (6, 0));
     }
 
     #[test]
