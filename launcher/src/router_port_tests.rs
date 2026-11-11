@@ -968,3 +968,73 @@ fn closing_the_launcher_waits_for_a_renewal_that_is_blocked_on_the_router_and_th
 fn the_wait_at_close_covers_a_blocked_call_and_a_removal() {
     assert!(QUIT_WAIT >= ROUTER_CALL * 2, "{QUIT_WAIT:?}");
 }
+
+/// What closing costs, as the window waits for it (`router_panel::stop_on_quit`): nothing when no
+/// mapping is held.
+#[test]
+fn closing_with_nothing_mapped_returns_at_once() {
+    let start = Instant::now();
+    Jobs::default().stop_all(QUIT_WAIT);
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        start.elapsed()
+    );
+    // The one the launcher calls takes the jobs out of the process-wide lock: with no job ever
+    // made, there is none to wait for.
+    let start = Instant::now();
+    stop_all();
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+/// A router that answers the removal at once costs the time of that call, not the wait.
+#[test]
+fn closing_when_the_router_answers_at_once_does_not_use_up_the_wait() {
+    let fake = Fake::new();
+    let start = |_: &Path, port: u16, before: Vec<Previous>| job(&fake, port, before);
+    let mut jobs = Jobs::default();
+    let dir = PathBuf::from("a");
+    jobs.sync(&[(dir.clone(), 26040)], start);
+    until("the mapping", || {
+        matches!(jobs.state(&dir), Some(State::Open { .. }))
+    });
+    let closing = Instant::now();
+    jobs.stop_all(QUIT_WAIT);
+    assert!(
+        closing.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        closing.elapsed()
+    );
+    assert_eq!(fake.calls(), [Call::Map(26040), Call::Remove(26040)]);
+}
+
+/// A router call that does not come back holds closing for the wait and no longer: `stop_all`
+/// returns when the wait is over, with the removal still not done.
+#[test]
+fn closing_stops_waiting_when_the_wait_is_over_though_a_router_call_has_not_come_back() {
+    let fake = Fake::new();
+    let start = |_: &Path, port: u16, before: Vec<Previous>| job(&fake, port, before);
+    let mut jobs = Jobs::default();
+    let dir = PathBuf::from("a");
+    jobs.sync(&[(dir.clone(), 26041)], start);
+    until("the mapping", || {
+        matches!(jobs.state(&dir), Some(State::Open { .. }))
+    });
+    fake.hold_removals();
+    let wait = Duration::from_millis(400);
+    let closing = Instant::now();
+    jobs.stop_all(wait);
+    let took = closing.elapsed();
+    assert!(took >= wait, "{took:?}");
+    assert!(took < wait + Duration::from_secs(3), "{took:?}");
+    assert!(!fake.calls().contains(&Call::Remove(26041)));
+    // Let the held removal finish so its thread ends with the test.
+    fake.release();
+    until("the removal", || {
+        fake.calls().contains(&Call::Remove(26041))
+    });
+}
