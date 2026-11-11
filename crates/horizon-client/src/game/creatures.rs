@@ -257,8 +257,12 @@ fn flame_geometry(
 pub(super) fn snap_split_yaw(c: &mut Mob, yaw: f32) {
     c.yaw = yaw;
     c.previous_yaw = yaw;
+    // A client takes the body's from it (`LivingEntity.recreateFromPacket`); a cube has no head
+    // of its own to turn.
     c.body_yaw = yaw;
+    c.previous_body_yaw = yaw;
     c.head_yaw = yaw;
+    c.previous_head_yaw = yaw;
 }
 pub(super) fn seen(m: &Mob, player: Option<[i32; 4]>) -> Seen {
     m.seen(player)
