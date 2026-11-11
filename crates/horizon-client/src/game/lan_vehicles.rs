@@ -454,6 +454,8 @@ impl Game<'_> {
         }
         let owner = host.hub.singleplayer_owner == Some(g.uuid);
         let (vehicle, good) = (g.vehicle, g.vehicle_good);
+        // `ServerChunkCache.move` on the rider's accepted vehicle move.
+        host.hub.guests[gi].ticket_chunk = None;
         let back = |host: &mut LanHost, position: Vec3, yaw: f32| {
             let packet = play::MoveVehicle {
                 position: [position.x, position.y, position.z],

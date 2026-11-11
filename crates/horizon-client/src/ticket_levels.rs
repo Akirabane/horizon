@@ -31,6 +31,7 @@
 //! Whoever the players are (the local player, LAN guests, a dedicated
 //! server's players), they count the same.
 use crate::fast_hash::FxHashMap;
+use horizon_core::geometry::Vec3;
 use std::sync::Arc;
 
 /// `ChunkLevel`'s levels.
@@ -252,9 +253,33 @@ pub struct ChunkTickets {
     sources: Option<Sources>,
     levels: Levels,
     portal: Vec<PortalTicket>,
+    /// The local player's tickets after a teleport: the chunk they stay at
+    /// and the (x, z) the player was put at, until it moves from there.
+    held: Option<((i32, i32), [f64; 2])>,
 }
 
 impl ChunkTickets {
+    /// `ServerGamePacketListenerImpl.teleport` does not call
+    /// `ServerChunkCache.move`: a player put at `to` keeps the tickets of the
+    /// chunk it was in (the first one held, if teleported again) until its
+    /// next move.
+    pub fn hold_player(&mut self, from: Vec3, to: Vec3) {
+        let chunk = self.player_chunk([from.x, from.z]);
+        self.held = Some((chunk, [to.x, to.z]));
+    }
+    /// `ChunkMap.move`: the chunk the local player's tickets are at, given
+    /// where it is (`at`: x, z). A player that moved off its teleport target
+    /// has sent a move; its tickets follow it again.
+    pub fn player_chunk(&mut self, at: [f64; 2]) -> (i32, i32) {
+        if let Some((chunk, to)) = self.held {
+            if to == at {
+                return chunk;
+            }
+            self.held = None;
+        }
+        ((at[0].floor() as i32) >> 4, (at[1].floor() as i32) >> 4)
+    }
+
     /// `None`: tick everywhere.
     pub fn update(&mut self, mut sources: Option<Sources>) {
         // The game submits a fresh `Sources` value every tick even when no
@@ -550,6 +575,20 @@ mod tests {
             simulation_distance: sim,
         }));
         t.levels()
+    }
+
+    #[test]
+    fn a_teleported_player_keeps_its_old_tickets_until_it_moves() {
+        let mut t = ChunkTickets::default();
+        assert_eq!(t.player_chunk([8.5, 8.5]), (0, 0));
+        t.hold_player(Vec3::new(8.5, 0.0, 8.5), Vec3::new(104.5, 0.0, 11.5));
+        assert_eq!(t.player_chunk([104.5, 11.5]), (0, 0));
+        // Teleported again: the chunk of the last accepted move still holds.
+        t.hold_player(Vec3::new(104.5, 0.0, 11.5), Vec3::new(200.5, 0.0, 11.5));
+        assert_eq!(t.player_chunk([200.5, 11.5]), (0, 0));
+        // Falling does not move x or z; a move does.
+        assert_eq!(t.player_chunk([200.5, 12.5]), (12, 0));
+        assert_eq!(t.player_chunk([200.5, 11.5]), (12, 0));
     }
 
     #[test]

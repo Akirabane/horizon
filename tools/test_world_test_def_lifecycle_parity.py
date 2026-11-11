@@ -2,6 +2,7 @@
 """Strict actual Game/Java world data pack test definition lifecycle program (H275)."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -33,6 +34,20 @@ def install_with_tests(world, predicates, functions, jar, *args, **kwargs):
 
 driver.install_datapack_fixtures = install_with_tests
 
+_run = driver.run_game
+
+
+def run_with_oracle_distance(command, *args, **kwargs):
+    """The oracle's default PlayerList clamps the view distance to the valid minimum, 2; the driver's 4 is for
+    the terrain other programs want around the player."""
+    if '--radius' in command:
+        command = list(command)
+        command[command.index('--radius') + 1] = '2'
+    return _run(command, *args, **kwargs)
+
+
+driver.run_game = run_with_oracle_distance
+
 if __name__ == '__main__':
     full = '--full-diagnostic' in sys.argv
     if full:
@@ -42,6 +57,10 @@ if __name__ == '__main__':
         i = sys.argv.index('--reference')
         reference = Path(sys.argv[i + 1]).resolve()
         del sys.argv[i:i + 2]
+    # The oracle's player stands at the origin, never placed at the world spawn.
+    os.environ.setdefault('HORIZON_HARNESS_OWNER_ORIGIN', '1')
+    # Its default PlayerList clamps the simulation distance to the valid minimum, 2.
+    os.environ.setdefault('HORIZON_HARNESS_LOADED_FIXTURE', '1')
     if '--work-dir' not in sys.argv:
         sys.argv += ['--work-dir', str(driver.lab.LOCAL / 'world-test-def-lifecycle')]
     build = Path(sys.argv[sys.argv.index('--work-dir') + 1]).resolve()

@@ -4111,17 +4111,12 @@ impl Game<'_> {
                 .iter()
                 .filter(|g| h.hub.here(g))
                 .filter(|g| !g.fake) // fake players hold small forced tickets below
-                .map(|g| (g.chunk(), g.spectator()))
+                .map(|g| (g.ticket_chunk(), g.spectator()))
                 .collect()
         });
         if let Some(p) = &self.player {
-            players.push((
-                (
-                    (p.position.x.floor() as i32) >> 4,
-                    (p.position.z.floor() as i32) >> 4,
-                ),
-                self.spectator(),
-            ));
+            let at = [p.position.x, p.position.z];
+            players.push((self.tickets.player_chunk(at), self.spectator()));
         }
         // A spectator the rule skips is still a player: a game that has one
         // must not take the headless fixtures' tick-everywhere case below.
