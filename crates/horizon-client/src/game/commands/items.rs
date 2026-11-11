@@ -1039,14 +1039,7 @@ impl Game<'_> {
                                 .unwrap_or(Tag::Compound(Default::default())),
                             v => horizon_client::scoreboard::json_to_tag(v),
                         };
-                        edit_components(&mut stack, |c| {
-                            let mut data = match c.get(&"minecraft:custom_data".into()) {
-                                Some(t @ Tag::Compound(_)) => t.clone(),
-                                _ => Tag::Compound(Default::default()),
-                            };
-                            merge_compound(&mut data, &tag);
-                            c.insert("minecraft:custom_data".into(), data);
-                        });
+                        set_custom_data(&mut stack, &tag);
                     }
                     "minecraft:set_components" => {
                         let patch = m["components"].clone();
@@ -1570,6 +1563,74 @@ fn edit_components(stack: &mut ItemStack, f: impl FnOnce(&mut horizon_world::nbt
     stack.extra = extra;
     stack.tidy();
 }
+/// `SetCustomDataFunction.run`: `CustomData.update(stack, tag -> tag.merge(value))`.
+fn set_custom_data(stack: &mut ItemStack, value: &Tag) {
+    edit_components(stack, |c| {
+        let mut data = match c.get(&"minecraft:custom_data".into()) {
+            Some(t @ Tag::Compound(_)) => t.clone(),
+            _ => Tag::Compound(Default::default()),
+        };
+        merge_compound(&mut data, value);
+        // `CustomData.update`: the component goes when the tag is left empty.
+        if matches!(&data, Tag::Compound(d) if d.is_empty()) {
+            c.remove(&"minecraft:custom_data".into());
+        } else {
+            c.insert("minecraft:custom_data".into(), data);
+        }
+    });
+}
+
+/// `CustomData.update` removes the component when the tag it leaves is empty, so an item never
+/// carries an empty `custom_data` (`SetCustomDataFunction` goes through it). The expected results
+/// come from the vanilla bytecode (see the pull request).
+#[cfg(test)]
+mod set_custom_data_tests {
+    use super::*;
+    use horizon_world::nbt::parse_snbt;
+
+    fn compound(snbt: &str) -> Tag {
+        parse_snbt(snbt).expect("valid snbt").0
+    }
+
+    fn stack_with(snbt: Option<&str>) -> ItemStack {
+        let mut stack = ItemStack::new("minecraft:stick", 1);
+        if let Some(snbt) = snbt {
+            set_custom_data(&mut stack, &compound(snbt));
+        }
+        stack
+    }
+
+    #[test]
+    fn merging_an_empty_tag_into_a_stack_with_no_custom_data_adds_none() {
+        let mut stack = stack_with(None);
+        set_custom_data(&mut stack, &compound("{}"));
+        assert!(stack.custom_data().is_none());
+        // Not even an empty component in the saved form.
+        let saved = horizon_client::item_data::encode_components(&stack);
+        let has = |c: &Tag| c.get("minecraft:custom_data").is_some();
+        assert!(saved.as_ref().is_none_or(|c| !has(c)), "{saved:?}");
+    }
+
+    #[test]
+    fn merging_an_empty_tag_keeps_what_the_stack_had() {
+        let mut stack = stack_with(Some("{keep:1b}"));
+        set_custom_data(&mut stack, &compound("{}"));
+        let data = stack.custom_data().expect("kept");
+        assert_eq!(data.len(), 1);
+        assert_eq!(data.get(&"keep".into()), Some(&Tag::Byte(1)));
+    }
+
+    #[test]
+    fn merging_adds_and_replaces_keys() {
+        let mut stack = stack_with(Some("{a:1,b:2}"));
+        set_custom_data(&mut stack, &compound("{b:5,c:3}"));
+        let data = stack.custom_data().expect("present");
+        assert_eq!(data.get(&"a".into()), Some(&Tag::Int(1)));
+        assert_eq!(data.get(&"b".into()), Some(&Tag::Int(5)));
+        assert_eq!(data.get(&"c".into()), Some(&Tag::Int(3)));
+    }
+}
+
 /// `CompoundTag.merge`: nested compounds merge, other values replace.
 fn merge_compound(into: &mut Tag, from: &Tag) {
     let (Tag::Compound(a), Tag::Compound(b)) = (into, from) else {
