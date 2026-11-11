@@ -2,6 +2,7 @@
 //! server threads and the play-state hub, feeds it the world's entities each
 //! tick and turns what the guests do into gameplay. A world that is not open
 //! costs one `Option` check per tick.
+mod equipment_break;
 mod event_timings;
 mod level_event_targets;
 
@@ -3133,51 +3134,6 @@ impl Game<'_> {
         if event == 35 && self.options.execution_role.is_client() {
             self.remote_totem(id);
         }
-    }
-    /// `LivingEntity.onEquippedItemBroken` for the acting player (the guest whose turn it
-    /// is, else the host): `level.broadcastEntityEvent` with `entityEventForEquipmentBreak`
-    /// of the slot, which each client answers with `breakItem` (the sound and the crumbs,
-    /// `remote_equipment_break`). Without a hub to tell, or in a window that runs the world
-    /// itself, the sound and the crumbs are played here.
-    pub(super) fn player_equipment_broke(
-        &mut self,
-        slot: horizon_world::player_inventory::EquipmentSlot,
-        stack: &horizon_client::items::ItemStack,
-    ) {
-        use horizon_world::player_inventory::EquipmentSlot;
-        let event = match slot {
-            EquipmentSlot::MainHand => 47,
-            EquipmentSlot::OffHand => 48,
-            EquipmentSlot::Head => 49,
-            EquipmentSlot::Chest => 50,
-            EquipmentSlot::Legs => 51,
-            EquipmentSlot::Feet => 52,
-            EquipmentSlot::Body => 65,
-            EquipmentSlot::Saddle => 68,
-        };
-        // The mods hear a server player's break (a creative player's gear takes no wear).
-        if !self.creative
-            && let (Some(uuid), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone())
-        {
-            self.native_player_destroy_item(uuid, &name, &stack.item, equipment_slot_name(slot));
-        }
-        let Some(at) = self
-            .player
-            .as_ref()
-            .map(|p| [p.position.x, p.position.y, p.position.z])
-        else {
-            return;
-        };
-        let told = self.lan_acting.is_some();
-        if told {
-            self.guest_equipment_breaks.push((event, at));
-        }
-        if told && !self.options.execution_role.is_client() {
-            return;
-        }
-        // LivingEntity.breakItem: the stack's break sound where it stands, then the crumbs.
-        self.break_sound_at(stack, at);
-        self.eat_particles(stack, 5);
     }
     /// `ServerPlayer.crit` (or `magicCrit` when `magic`): this window's
     /// emitter, and an animation for the attacker's client and observers once
