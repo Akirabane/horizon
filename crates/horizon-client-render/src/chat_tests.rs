@@ -1139,6 +1139,8 @@ fn a_click_on_the_queue_row_is_the_next_held_message() {
     assert!(at(&chat, -1.0, bottom + 2.0).is_none());
     chat.queue = 0;
     assert!(at(&chat, 0.5, bottom + 2.0).is_none());
+}
+
 /// `SuggestionsList.extractRenderState`: the list's rectangle asks for the
 /// pointing hand; outside it the cursor stays the arrow.
 #[test]
