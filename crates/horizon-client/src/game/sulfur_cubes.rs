@@ -344,20 +344,15 @@ impl Game<'_> {
         if size <= 1 {
             return;
         }
-        let offset = f64::from(m.width()) / 2.0;
+        // Each child's yaw comes from the dying cube's own random (its copy: the body goes now).
+        let mut own = m.random.clone();
         for i in 0..sulfur_cube::split_count(m) {
-            let xd = (f64::from(i % 2) - 0.5) * offset;
-            let zd = (f64::from(i / 2) - 0.5) * offset;
-            let at = [m.position.x + xd, m.position.y + 0.5, m.position.z + zd];
-            let yaw = self.world.random.next_float() * 360.0;
-            if let Some(id) = self.spawn_mob_raw(&m.kind.id, at, m.persistent)
+            if let Some(id) = self.spawn_split_cube(m, i)
                 && let Some(c) = self.mobs.iter_mut().find(|c| c.id == id)
             {
                 c.extra.age = -24000;
                 sulfur_cube::set_size(c, size / 2, true);
-                c.yaw = yaw;
-                c.body_yaw = yaw;
-                c.head_yaw = yaw;
+                super::creatures::snap_split_yaw(c, own.next_float() * 360.0);
             }
         }
     }

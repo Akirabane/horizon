@@ -252,6 +252,14 @@ fn flame_geometry(
         ss += 1;
     }
 }
+/// `setUpSplitCube`'s `snapTo(.., yaw, 0)` for a split cube's child: it faces `yaw` from its
+/// first frame.
+pub(super) fn snap_split_yaw(c: &mut Mob, yaw: f32) {
+    c.yaw = yaw;
+    c.previous_yaw = yaw;
+    c.body_yaw = yaw;
+    c.head_yaw = yaw;
+}
 pub(super) fn seen(m: &Mob, player: Option<[i32; 4]>) -> Seen {
     m.seen(player)
 }
@@ -1799,30 +1807,54 @@ impl Game<'_> {
             self.split_sulfur_cube(m);
             return;
         }
-        // 🤖 Agent: AbstractCubeMob.getSplitCount: two to four smaller slimes.
         let size = m.extra.size;
         if size <= 1 {
             return;
         }
-        let mut n = 2 + self.world.random.next_int_bound(3).unwrap_or(0);
+        // The count (getSplitCount: two to four smaller slimes) and each child's yaw come from the
+        // dying cube's own random; the body goes with this call, so its copy draws what it would.
+        let mut own = m.random.clone();
+        let mut n = 2 + own.next_int_bound(3).unwrap_or(0);
         let mut cancel = false;
         let mut count = n as u32;
         let kind = super::native_hooks::mob_kind(m);
         self.native_mob_split(m.id, &kind, size, size / 2, &mut count, &mut cancel);
         n = if cancel { 0 } else { count.min(64) as _ };
         for k in 0..n {
-            let off = |kk: i32| (f64::from(kk % 2) - 0.5) * f64::from(size) / 4.0;
-            let at = [
-                m.position.x + off(k),
-                m.position.y + 0.5,
-                m.position.z + off(k / 2),
-            ];
-            if let Some(id) = self.spawn_mob_raw(&m.kind.id, at, m.persistent)
+            if let Some(id) = self.spawn_split_cube(m, k)
                 && let Some(c) = self.mobs.iter_mut().find(|c| c.id == id)
             {
+                // setUpSplitCube: setSize(halfSize, true), then snapTo with a yaw of its own.
                 horizon_client::mobs::cube::set_size(c, size / 2);
+                snap_split_yaw(c, own.next_float() * 360.0);
             }
         }
+    }
+    /// `AbstractCubeMob.remove`'s `convertTo(getType(), SPLIT_ON_DEATH, TRIGGERED)` for its `i`th
+    /// child: a new cube of the parent's type (`EntityType.create`, no spawn yaw drawn) half the
+    /// parent's width apart (`(i % 2 - 0.5) * width / 2`, in floats), half a block up, carrying
+    /// `ConversionType.convertCommon`'s effects and flags.
+    pub(super) fn spawn_split_cube(&mut self, from: &Mob, i: i32) -> Option<u32> {
+        let offset = from.width() / 2.0;
+        let xd = ((i % 2) as f32 - 0.5) * offset;
+        let zd = ((i / 2) as f32 - 0.5) * offset;
+        let at = [
+            from.position.x + f64::from(xd),
+            from.position.y + 0.5,
+            from.position.z + f64::from(zd),
+        ];
+        let id = self.spawn_mob_internal(
+            &from.kind.id,
+            at,
+            from.persistent,
+            false,
+            false,
+            false,
+            SpawnYaw::Fixed(0.0),
+        )?;
+        let c = self.mobs.iter_mut().find(|c| c.id == id)?;
+        horizon_client::mobs::conversion::common(from, c, false);
+        Some(id)
     }
     /// The killer's side of a mob's death: `ServerPlayer.awardKillScore`'s
     /// statistics and scores, and the `player_killed_entity` trigger.

@@ -7769,6 +7769,44 @@ def comparator_setblock_output():
     return ops + setup('/tick unfreeze', f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
 
+def cube_split():
+    """#8037: `AbstractCubeMob.remove` splits a dead slime or magma cube bigger than size 1 when its body goes, 20
+    ticks after its death. The count (`getSplitCount`, `2 + random.nextInt(3)`) and each child's yaw
+    (`setUpSplitCube`: `random.nextFloat() * 360`) come from the parent's own random, and each child sits at
+    `(i % 2 - 0.5) * width / 2`, `(i / 2 - 0.5) * width / 2` (a cube's width is `0.52 * size`)."""
+    x0, y0, z0 = 4096 - 384, 260, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
+            'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False),
+           {'op': 'sync_randoms', 'uniquifier': 8037, 'entity_id': 8_037_000, 'level_seed': 8037}]
+    cubes = [('slime', 3, x0 + 4.5, z0 + 4.5), ('magma_cube', 1, x0 + 11.5, z0 + 11.5)]
+    for kind, tag, x, z in cubes:
+        # Persistent: no player is within 128 blocks, where a monster despawns at once (Mob.checkDespawn).
+        ops.append(cmd(f'/summon minecraft:{kind} {x} {y0} {z} {{Size:{tag},NoAI:1b,PersistenceRequired:1b}}',
+                       expect_result=1))
+    for kind, _, x, z in cubes:
+        # A blow, not /kill: a /kill'ed mob starts dying a tick early in Horizon (#15443).
+        ops.append(cmd(f'/damage @e[type={kind},x={x},y={y0},z={z},distance=..1,limit=1] 1000 minecraft:generic',
+                       expect_result=1))
+    # LivingEntity.tickDeath removes the body on the 20th tick after the death, and the split comes with it:
+    # the dying bodies are still there after 19.
+    for n in (19, 1):
+        ops.append({'op': 'tick', 'n': n})
+        ops.append(cmd(f'/execute if entity @e[x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]'))
+    for kind, _, x, z in cubes:
+        ops.append(cmd(f'/execute if entity @e[type={kind},x={x},y={y0},z={z},distance=..3]'))
+        # One reference point per quadrant, so no two children tie on distance.
+        for sx, sz in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+            child = f'@e[type={kind},x={x + sx},y={y0},z={z + sz * 0.9},distance=..4,sort=nearest,limit=1]'
+            for key in ('Pos[0]', 'Pos[1]', 'Pos[2]', 'Rotation[0]', 'Size'):
+                ops.append(cmd(f'/data get entity {child} {key}'))
+    area = f'x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16'
+    return ops + setup(*[SHRINK_SULFUR_CUBES.format(f'@e[type={kind},{area}]') for kind, *_ in cubes],
+                       f'/kill @e[type=!player,{area}]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 4} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def groups():
     try:
         from .spectral_duration_corpus import cases as spectral_saved_duration
@@ -7967,6 +8005,7 @@ def groups():
         ('dispensed item escape', dispensed_item_escape()),
         ('command block last output', command_block_last_output()),
         ('comparator setblock output', comparator_setblock_output()),
+        ('cube split', cube_split()),
         ('glide fall accumulation', glide_fall_accumulation()),
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),

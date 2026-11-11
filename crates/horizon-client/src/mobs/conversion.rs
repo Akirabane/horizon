@@ -1,5 +1,6 @@
 //! `Mob.convertTo` with `ConversionType.SINGLE`: one mob turns into another
-//! of a different type in its place, keeping what the old one had.
+//! of a different type in its place, keeping what the old one had. [`common`]
+//! is also what a cube mob's split children get (`SPLIT_ON_DEATH`).
 use super::Mob;
 
 /// `ConversionParams` of a `SINGLE` conversion.
@@ -63,7 +64,13 @@ pub fn single(from: &Mob, to: &mut Mob, params: Params) {
     to.extra.leash = from.extra.leash;
     to.extra.leash_pending = from.extra.leash_pending;
     to.extra.leash_player = from.extra.leash_player;
-    // convertCommon.
+    common(from, to, params.preserve_can_pick_up_loot);
+}
+
+/// `ConversionType.convertCommon`, what every conversion carries over (`SINGLE` and `SPLIT_ON_DEATH`):
+/// effects, babyhood and age, the flags, the custom name. `preserve_can_pick_up_loot` is the params'
+/// `preserveCanPickUpLoot`.
+pub fn common(from: &Mob, to: &mut Mob, preserve_can_pick_up_loot: bool) {
     to.extra.effects = from.extra.effects.clone();
     to.extra.effect_fallbacks = from.extra.effect_fallbacks.clone();
     to.extra.hidden_effects = from.extra.hidden_effects.clone();
@@ -85,7 +92,7 @@ pub fn single(from: &Mob, to: &mut Mob, params: Params) {
         to.extra.forced_age = from.extra.forced_age;
         to.extra.forced_age_timer = from.extra.forced_age_timer;
     }
-    if params.preserve_can_pick_up_loot {
+    if preserve_can_pick_up_loot {
         to.extra.pick_up_loot = from.extra.pick_up_loot;
     }
     to.extra.left_handed = from.extra.left_handed;
