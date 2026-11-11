@@ -5,15 +5,16 @@
 //! `horizon_friends::portmap` (PCP, NAT-PMP, then UPnP IGD; the same code Play with Friends uses),
 //! renewed when the lease is due, and removed when the server stops, the switch goes off or the
 //! launcher closes. The launcher removes the mapping when it closes normally, a server that keeps
-//! running as a background service included; it waits [`QUIT_WAIT`] for the routers, long enough
-//! for a call already blocked on one and then the removal. After a crash nothing removes it: the router's lease
+//! running as a background service included: [`begin_stop`] tells every job at once, without
+//! waiting, and the process is kept alive while [`removals_pending`] says so, for at most
+//! [`QUIT_WAIT`], long enough for a call already blocked on a router and then the removal. After a crash nothing removes it: the router's lease
 //! ends it (an hour), except on a router that only gives permanent UPnP leases, where `portmap`
 //! asks for none and the mapping stays until it is removed.
 //!
 //! [`Hold`] is the mapping and its rules with no thread and no router behind it (a [`Gateway`]
 //! stands in for the router in tests), [`Job`] runs one on a thread, [`Jobs`] keeps one job per
-//! server that should have one, and [`sync`], [`state`] and [`stop_all`] are the launcher's one set
-//! of them.
+//! server that should have one, and [`sync`], [`state`], [`begin_stop`] and [`removals_pending`] are
+//! the launcher's one set of them.
 use horizon_friends::portmap::{self, Targets};
 use std::{
     collections::HashMap,
@@ -38,10 +39,11 @@ const ALIVE_MISSES: u32 = 2;
 /// The longest one router call takes in `portmap`: a UPnP request connects within 3 s and waits
 /// 5 s for the answer (`portmap.rs`, `http`).
 const ROUTER_CALL: Duration = Duration::from_secs(8);
-/// How long closing the launcher waits for the mappings to be removed: a renewal that is already
-/// blocked on the router when the launcher closes, then the removal, each one router call. A job
-/// looks at its stop request only between calls, so a shorter wait could let the process end
-/// before the removal was even sent.
+/// How long closing the launcher keeps the process alive for the mappings to be removed: a renewal
+/// that is already blocked on the router when the launcher closes, then the removal, each one
+/// router call. A job looks at its stop request only between calls, so a shorter wait could let
+/// the process end before the removal was even sent. The window's event loop keeps running while
+/// it lasts (`router_panel::quit`).
 pub const QUIT_WAIT: Duration = Duration::from_secs(ROUTER_CALL.as_secs() * 2 + 4);
 
 /// Why the router did not open the port. The page turns [`Failure::NoPrivateAddress`] into its
@@ -401,6 +403,8 @@ pub struct Jobs {
     /// Stopped jobs whose threads are still telling the router. Closing the launcher waits for
     /// them too, and a new job for the same server waits for its predecessor.
     stopping: Vec<Job>,
+    /// The launcher is closing ([`Jobs::begin_stop`]): no new job is started.
+    closing: bool,
     ports: HashMap<PathBuf, u16>,
     /// Servers that started again: the next port read for each is the one they started with.
     restarted: std::collections::HashSet<PathBuf>,
@@ -453,6 +457,11 @@ impl Jobs {
         wanted: &[(PathBuf, u16)],
         start: impl Fn(&Path, u16, Vec<Previous>) -> Job,
     ) {
+        // The page goes on polling while the launcher waits to close: a job started now would
+        // have nobody to remove its mapping.
+        if self.closing {
+            return;
+        }
         for (dir, job) in std::mem::take(&mut self.jobs) {
             let keep = !job.finished()
                 && wanted
@@ -486,16 +495,28 @@ impl Jobs {
         self.jobs.get(dir).map(Job::state)
     }
 
-    /// Stop every job and wait up to `wait` in all for the routers to be told, those of jobs
-    /// stopped earlier included.
-    pub fn stop_all(&mut self, wait: Duration) {
+    /// Tell every job to remove its mapping and end, without waiting for any router: the jobs of
+    /// servers still wanted and those stopped earlier alike. From now on no job is started.
+    pub fn begin_stop(&mut self) {
+        self.closing = true;
         let mut jobs: Vec<Job> = self.jobs.drain().map(|(_, job)| job).collect();
-        jobs.append(&mut self.stopping);
-        for job in &jobs {
+        self.stopping.append(&mut jobs);
+        for job in &self.stopping {
             job.stop();
         }
+    }
+
+    /// Whether a router has still to be told something: some stopped job has not finished.
+    pub fn removals_pending(&mut self) -> bool {
+        self.stopping.retain(|job| !job.finished());
+        !self.stopping.is_empty()
+    }
+
+    /// [`Jobs::begin_stop`], then wait up to `wait` in all for the routers to be told.
+    pub fn stop_all(&mut self, wait: Duration) {
+        self.begin_stop();
         let end = Instant::now() + wait;
-        for job in &jobs {
+        for job in &self.stopping {
             job.wait(end.saturating_duration_since(Instant::now()));
         }
     }
@@ -539,13 +560,22 @@ pub fn state(dir: &Path) -> Option<State> {
     jobs().as_ref().and_then(|j| j.state(dir))
 }
 
-/// Remove every mapping, as the launcher closes. The jobs are taken out of the lock first, so
-/// nothing else waits on it for the removals.
-pub fn stop_all() {
-    let taken = jobs().take();
-    if let Some(mut jobs) = taken {
-        jobs.stop_all(QUIT_WAIT);
-    }
+/// The launcher is closing: every job is told to remove its mapping, and no job is started from
+/// now on. Returns at once; the removals go on in the jobs' threads, and [`removals_pending`] says
+/// when they are over.
+pub fn begin_stop() {
+    jobs().get_or_insert_with(Jobs::default).begin_stop();
+}
+
+/// Whether a router has still to be told something since [`begin_stop`].
+pub fn removals_pending() -> bool {
+    jobs().as_mut().is_some_and(Jobs::removals_pending)
+}
+
+/// Whether closing still waits: removals are pending, and `started` (when closing began) is less
+/// than [`QUIT_WAIT`] before `now`.
+pub fn still_waiting(pending: bool, started: Instant, now: Instant) -> bool {
+    pending && now.saturating_duration_since(started) < QUIT_WAIT
 }
 
 #[cfg(test)]

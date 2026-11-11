@@ -7,10 +7,38 @@ use horizon_launcher::router_port::{self, Failure, State};
 use std::path::PathBuf;
 
 /// Close the launcher: the routers are told first, since a server that keeps running as a service
-/// has no launcher to renew its port after this.
+/// has no launcher to renew its port after this. They are only told to start (nothing waits for
+/// a router here), so their removals go on while the servers are stopped and the rest of closing
+/// runs; [`quit`] waits for them.
 pub(in super::super) fn stop_on_quit() {
-    router_port::stop_all();
+    router_port::begin_stop();
     servers_page::stop_on_quit();
+}
+
+/// The end of closing, in place of `App::quit`: when no router has anything left to be told, quit
+/// at once; otherwise the process stays alive, with the event loop running (the window keeps
+/// answering and drawing), until they are told or `QUIT_WAIT` has passed, and then quits. GPUI
+/// itself quits when the last window is gone, which would end the process before the removals are
+/// sent, so that is switched off first.
+pub(in super::super) fn quit(cx: &mut App) {
+    if !router_port::removals_pending() {
+        return cx.quit();
+    }
+    cx.set_quit_mode(gpui::QuitMode::Explicit);
+    let started = std::time::Instant::now();
+    cx.spawn(async move |cx| {
+        while router_port::still_waiting(
+            router_port::removals_pending(),
+            started,
+            std::time::Instant::now(),
+        ) {
+            cx.background_executor()
+                .timer(Duration::from_millis(100))
+                .await;
+        }
+        cx.update(|cx| cx.quit());
+    })
+    .detach();
 }
 
 /// Whether a server whose phase was `was` (none: not seen yet) and is `now` has just started: a new

@@ -969,26 +969,116 @@ fn the_wait_at_close_covers_a_blocked_call_and_a_removal() {
     assert!(QUIT_WAIT >= ROUTER_CALL * 2, "{QUIT_WAIT:?}");
 }
 
-/// What closing costs, as the window waits for it (`router_panel::stop_on_quit`): nothing when no
-/// mapping is held.
+/// What closing costs (`router_panel::stop_on_quit`, then `router_panel::quit`): nothing when no
+/// mapping is held, and beginning never waits for a router.
 #[test]
-fn closing_with_nothing_mapped_returns_at_once() {
+fn closing_with_nothing_mapped_returns_at_once_and_has_nothing_pending() {
     let start = Instant::now();
-    Jobs::default().stop_all(QUIT_WAIT);
+    let mut jobs = Jobs::default();
+    jobs.begin_stop();
+    assert!(!jobs.removals_pending());
+    // The ones the launcher calls, on the process-wide set (which nothing else here uses).
+    begin_stop();
+    assert!(!removals_pending());
     assert!(
         start.elapsed() < Duration::from_secs(1),
         "{:?}",
         start.elapsed()
     );
-    // The one the launcher calls takes the jobs out of the process-wide lock: with no job ever
-    // made, there is none to wait for.
-    let start = Instant::now();
-    stop_all();
+}
+
+/// Beginning to close returns at once even while a router has not answered, leaves the removal
+/// going, and starts nothing new.
+#[test]
+fn beginning_to_close_does_not_wait_for_a_router_and_starts_nothing_new() {
+    let fake = Fake::new();
+    let start = |_: &Path, port: u16, before: Vec<Previous>| job(&fake, port, before);
+    let mut jobs = Jobs::default();
+    let dir = PathBuf::from("a");
+    jobs.sync(&[(dir.clone(), 26050)], start);
+    until("the mapping", || {
+        matches!(jobs.state(&dir), Some(State::Open { .. }))
+    });
+    fake.hold_removals();
+    let beginning = Instant::now();
+    jobs.begin_stop();
     assert!(
-        start.elapsed() < Duration::from_secs(1),
+        beginning.elapsed() < Duration::from_secs(1),
         "{:?}",
-        start.elapsed()
+        beginning.elapsed()
     );
+    // The router has not been told yet, and something is pending.
+    assert!(!fake.calls().contains(&Call::Remove(26050)));
+    assert!(jobs.removals_pending());
+    // The page goes on polling while the launcher waits: nothing is started for any server.
+    jobs.sync(&[(dir.clone(), 26050), (PathBuf::from("b"), 26051)], start);
+    assert_eq!(jobs.state(&dir), None);
+    assert_eq!(jobs.state(Path::new("b")), None);
+    fake.release();
+    until("the removal", || !jobs.removals_pending());
+    assert_eq!(fake.calls(), [Call::Map(26050), Call::Remove(26050)]);
+}
+
+/// What `router_panel::quit` does after the event loop goes on: it asks `removals_pending` until
+/// it says no, and every removal has been sent by then, for every server.
+#[test]
+fn waiting_after_beginning_to_close_still_sends_every_removal() {
+    let fake = Fake::new();
+    let start = |_: &Path, port: u16, before: Vec<Previous>| job(&fake, port, before);
+    let mut jobs = Jobs::default();
+    jobs.sync(
+        &[(PathBuf::from("a"), 26060), (PathBuf::from("b"), 26061)],
+        start,
+    );
+    until("both mappings", || {
+        fake.calls().len() == 2
+            && ["a", "b"]
+                .iter()
+                .all(|d| matches!(jobs.state(Path::new(d)), Some(State::Open { .. })))
+    });
+    fake.hold_removals();
+    fake.release_after(150);
+    jobs.begin_stop();
+    assert!(jobs.removals_pending());
+    until("nothing pending", || !jobs.removals_pending());
+    let calls = fake.calls();
+    assert!(calls.contains(&Call::Remove(26060)), "{calls:?}");
+    assert!(calls.contains(&Call::Remove(26061)), "{calls:?}");
+}
+
+/// A router call that does not come back keeps the removal pending, and closing stops waiting at
+/// `QUIT_WAIT` all the same: `still_waiting` is what bounds `router_panel::quit`'s loop.
+#[test]
+fn closing_stops_waiting_at_the_quit_wait_whatever_a_router_does() {
+    let started = Instant::now();
+    let at = |after: Duration| started + after;
+    // Nothing pending: no wait, at any moment.
+    assert!(!still_waiting(false, started, at(Duration::ZERO)));
+    // Pending: waits until the wait is over, and no longer.
+    assert!(still_waiting(true, started, at(Duration::ZERO)));
+    assert!(still_waiting(
+        true,
+        started,
+        at(QUIT_WAIT - Duration::from_millis(1))
+    ));
+    assert!(!still_waiting(true, started, at(QUIT_WAIT)));
+    assert!(!still_waiting(true, started, at(QUIT_WAIT * 2)));
+    // And a removal that never comes back stays pending: it is the bound that ends the wait.
+    let fake = Fake::new();
+    let start = |_: &Path, port: u16, before: Vec<Previous>| job(&fake, port, before);
+    let mut jobs = Jobs::default();
+    let dir = PathBuf::from("a");
+    jobs.sync(&[(dir.clone(), 26070)], start);
+    until("the mapping", || {
+        matches!(jobs.state(&dir), Some(State::Open { .. }))
+    });
+    fake.hold_removals();
+    jobs.begin_stop();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(jobs.removals_pending());
+    // Let the held removal finish so its thread ends with the test.
+    fake.release();
+    until("the removal", || !jobs.removals_pending());
 }
 
 /// A router that answers the removal at once costs the time of that call, not the wait.

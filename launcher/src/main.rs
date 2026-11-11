@@ -5638,7 +5638,7 @@ fn shut_down(cx: &mut App) {
     telemetry::send_before_exit();
     // A staged launcher update goes in once this process has exited.
     horizon_launcher::update_handoff::on_quit();
-    cx.quit()
+    internet::quit(cx)
 }
 
 /// The macOS shortcuts: Cmd+Q quits, Cmd+W closes the window.
