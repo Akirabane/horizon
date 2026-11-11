@@ -1139,4 +1139,31 @@ fn a_click_on_the_queue_row_is_the_next_held_message() {
     assert!(at(&chat, -1.0, bottom + 2.0).is_none());
     chat.queue = 0;
     assert!(at(&chat, 0.5, bottom + 2.0).is_none());
+/// `SuggestionsList.extractRenderState`: the list's rectangle asks for the
+/// pointing hand; outside it the cursor stays the arrow.
+#[test]
+fn the_suggestion_list_asks_for_the_pointing_hand() {
+    let font = font();
+    let m = Measure(&font);
+    let registries = Registries::default();
+    let c = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+    };
+    let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
+    screen.type_text(&m, &c, "/");
+    let rect = screen
+        .suggestions
+        .as_ref()
+        .expect("the root commands are a suggestion list")
+        .rect;
+    let _ = crate::widgets::take_cursor();
+    screen.draw(&m, (rect[0] + 2, rect[1] + 2), 0, 0);
+    assert_eq!(
+        crate::widgets::take_cursor(),
+        crate::widgets::Cursor::PointingHand
+    );
+    let _ = crate::widgets::take_cursor();
+    screen.draw(&m, (rect[0] - 1, rect[1] + 2), 0, 0);
+    assert_eq!(crate::widgets::take_cursor(), crate::widgets::Cursor::Arrow);
 }
