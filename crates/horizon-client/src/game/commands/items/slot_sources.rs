@@ -1,6 +1,7 @@
 //! Shared holder/context resolution before SlotCollection read or live-write consumption.
 use super::{Game, Owner, R, err};
 use horizon_client::datapack::DataStore;
+use horizon_world::nbt::Tag;
 use serde_json::Value;
 use std::collections::BTreeSet;
 fn id(raw: &str) -> String {
@@ -9,6 +10,44 @@ fn id(raw: &str) -> String {
     } else {
         format!("minecraft:{raw}")
     }
+}
+/// `LimitSlotSource`'s limit is `Codec.INT`: any number's `Number.intValue()`,
+/// so a pack's `2.5` and a command's `2.5d` both select two slots.
+pub(super) fn limit(source: &Value) -> usize {
+    let limit = &source["limit"];
+    let value = match limit.as_i64() {
+        Some(whole) => whole as i32,
+        // Java's (int) cast saturates, and NaN becomes 0, as `as` does.
+        None => limit.as_f64().unwrap_or(0.0) as i32,
+    };
+    usize::try_from(value).unwrap_or(0)
+}
+/// A typed source as the consumers read it. `tag_to_json` reads a byte as a
+/// boolean; a limit keeps its number (`limit:1b`).
+fn typed_source(tag: &Tag) -> Value {
+    fn keep_byte_limits(tag: &Tag, value: &mut Value) {
+        match tag {
+            Tag::List(terms) => {
+                for (term, value) in terms.iter().zip(value.as_array_mut().into_iter().flatten()) {
+                    keep_byte_limits(term, value);
+                }
+            }
+            Tag::Compound(_) => {
+                if let Some(Tag::Byte(limit)) = tag.get("limit") {
+                    value["limit"] = Value::from(*limit);
+                }
+                for child in ["slot_source", "terms"] {
+                    if let Some(tag) = tag.get(child) {
+                        keep_byte_limits(tag, &mut value[child]);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut value = horizon_client::scoreboard::tag_to_json(tag);
+    keep_byte_limits(tag, &mut value);
+    value
 }
 /// Resolve holders into the existing structured-source representation, preserving
 /// ordered terms, duplicate collection visits and each transform's nesting.
@@ -85,21 +124,20 @@ impl Game<'_> {
         } else {
             let (tag, _) = horizon_world::nbt::parse_snbt(raw)
                 .map_err(|error| err("argument.resource_or_id.failed_to_parse", &[&error]))?;
-            horizon_client::scoreboard::tag_to_json(&tag)
+            typed_source(&tag)
         };
         expand(&self.fns.store, &value)
             .map(Some)
             .map_err(|error| err("argument.resource_or_id.failed_to_parse", &[&error]))
     }
     /// ItemCommands.getSlotsFromProvider binds CONTAINER separately from THIS_ENTITY.
+    /// THIS_ENTITY is `CommandSourceStack.getEntity`: the player who typed the command, the
+    /// entity `execute as` names, nobody for the console or a function.
     /// Other valid context targets are absent in COMMAND_SLOT_SOURCE, never Player fallbacks.
     pub(super) fn slot_source_owner(&self, container: &Owner, source: &Value) -> Option<Owner> {
         match source["source"].as_str().unwrap_or("container") {
             "container" => Some(container.clone()),
-            "this" => self
-                .command_source
-                .and_then(|s| s.entity)
-                .map(Owner::Entity),
+            "this" => self.source_entity().map(Owner::Entity),
             _ => None,
         }
     }

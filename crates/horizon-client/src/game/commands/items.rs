@@ -266,7 +266,7 @@ impl Game<'_> {
             }
             "limit_slots" => {
                 let mut slots = self.inline_slots(owner, &source["slot_source"]);
-                slots.truncate(source["limit"].as_u64().unwrap_or(0) as usize);
+                slots.truncate(slot_sources::limit(source));
                 slots
             }
             "filtered" => {
@@ -374,7 +374,7 @@ impl Game<'_> {
                 owner,
                 &source["slot_source"],
                 filters,
-                limit.min(source["limit"].as_u64().unwrap_or(0) as usize),
+                limit.min(slot_sources::limit(source)),
                 out,
             ),
             _ => {}
@@ -2867,6 +2867,77 @@ mod registered_slot_source_preservation_tests {
         }
         assert_eq!(game.block_entity_nbt([0, 100, 0]).as_ref(), Some(&before));
         assert_eq!(game.world.game_time, clock);
+    }
+
+    /// `Codec.INT` gives `limit:1b` and `limit:2.5d` their `Number.intValue()`:
+    /// a read counts that many slots and a write changes that many.
+    #[test]
+    #[ignore = "needs prepared resources and isolated homes/cwd"]
+    fn a_byte_or_fractional_limit_selects_its_int_value() {
+        let (mut game, _) = scene("slot-source-numeric-limit-world");
+        let source = |limit: &str| {
+            format!(
+                "{{type:\"limit_slots\",limit:{limit},slot_source:{{type:\"slot_range\",slots:\"container.*\"}}}}"
+            )
+        };
+        for (limit, slots) in [("1b", 1), ("2.5d", 2)] {
+            assert!(game.run_command("scoreboard players set #q slotprobe -99"));
+            assert!(game.run_command(&format!(
+                "execute store result score #q slotprobe run execute if slots block 0 100 0 {}",
+                source(limit)
+            )));
+            assert_eq!(
+                game.score.board.score("#q", "slotprobe").unwrap().value,
+                slots,
+                "{limit}"
+            );
+        }
+        // `/item override` writes the stack over the selected slots and no further:
+        // one slot for `1b`, two for `2.5d`, the stone in the fourth slot never.
+        let held = |game: &mut Game<'_>| {
+            [0, 1, 3].map(|slot| {
+                game.slot_get(&Slot::Block([0, 100, 0], slot))
+                    .map(|stack| (stack.item.to_string(), stack.count))
+            })
+        };
+        let stack = |item: &str, count| Some((format!("minecraft:{item}"), count));
+        assert!(game.run_command(&format!(
+            "item override block 0 100 0 {} with minecraft:diamond 2",
+            source("1b")
+        )));
+        assert_eq!(
+            held(&mut game),
+            [stack("diamond", 2), stack("dirt", 2), stack("stone", 7)]
+        );
+        assert!(game.run_command(&format!(
+            "item override block 0 100 0 {} with minecraft:emerald 2",
+            source("2.5d")
+        )));
+        assert_eq!(
+            held(&mut game),
+            [stack("emerald", 2), None, stack("stone", 7)]
+        );
+    }
+
+    /// A command the player types runs as them (`CommandSourceStack.getEntity`),
+    /// so `source:"this"` is their own slots without an `execute as`.
+    #[test]
+    #[ignore = "needs prepared resources and isolated homes/cwd"]
+    fn a_command_the_player_types_binds_this_to_them() {
+        let (mut game, _) = scene("slot-source-player-this-world");
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(
+                game.motion,
+                horizon_core::geometry::Vec3::new(0.5, 101.0, 0.5),
+            )
+            .unwrap(),
+        );
+        assert!(game.command_source.is_none());
+        assert!(game.run_command(
+            r#"item replace entity @s {type:"slot_range",source:"this",slots:"weapon.mainhand"} with minecraft:stone"#
+        ));
+        let hand = game.slot_get(&Slot::MainHand).unwrap();
+        assert_eq!((&*hand.item, hand.count), ("minecraft:stone", 1));
     }
 }
 
