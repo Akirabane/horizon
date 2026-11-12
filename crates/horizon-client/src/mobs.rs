@@ -2402,8 +2402,7 @@ pub struct Seen {
     pub xp: i32,
     /// What other villagers read of a villager's state and brain.
     pub villager: Option<Arc<villager::Seen>>,
-    /// `MAX_HEALTH`, `JUMP_STRENGTH` and `MOVEMENT_SPEED` base values (a
-    /// horse's breeding stock).
+    /// `MAX_HEALTH`, `JUMP_STRENGTH` and `MOVEMENT_SPEED` base values (a horse's breeding stock).
     pub stats: [f64; 3],
     /// `Wolf.isInSittingPose`.
     pub sitting: bool,
@@ -2424,6 +2423,8 @@ pub struct Seen {
     pub hurt_recently: bool,
     /// `Hoglin.canBeHunted`: an adult hoglin without `CannotBeHunted`.
     pub huntable: bool,
+    /// `Entity.isInvulnerable`: `Invulnerable`, or `invulnerableTime` left.
+    pub invulnerable: bool,
     /// A happy ghast's `isOnStillTimeout` (a player on its back holds it).
     pub still: bool,
     /// `Entity.isVehicle`: something rides it.
@@ -2794,8 +2795,7 @@ pub struct PlayerView {
     pub effects: Vec<&'static str>,
     /// The player's UUID (villagers' gossip is keyed by it).
     pub uuid: [i32; 4],
-    /// The mobs on the player's team (`isAlliedTo`): combat targeting
-    /// leaves the player alone.
+    /// The mobs on the player's team (`isAlliedTo`): combat targeting leaves the player alone.
     pub allies: std::sync::Arc<std::collections::HashSet<u32>>,
     /// A LAN guest: its own client moves it, and touching mobs push it there
     /// (`EntitySelector.pushableBy` on the client).
