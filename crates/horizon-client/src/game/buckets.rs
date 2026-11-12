@@ -46,4 +46,18 @@ impl Game<'_> {
         }
         hit.beside()
     }
+
+    /// `BucketItem.use`'s guard before it touches the world: `level.mayInteract`,
+    /// which on a dedicated server refuses a non-operator inside the spawn
+    /// protection radius (at the block the bucket's own ray met), then
+    /// `player.mayUseItemAt` (adventure mode's `can_place_on`).
+    pub(super) fn bucket_use_refused(&self, pos: [i32; 3]) -> bool {
+        self.lan_acting_spawn_protection
+            .is_some_and(|radius| self.spawn_protects(radius, self.dim.id(), pos))
+            || (!self.may_build() && !self.can_place_on_in_adventure(pos))
+    }
 }
+
+#[cfg(test)]
+#[path = "bucket_spawn_protection_tests.rs"]
+mod bucket_spawn_protection_tests;
