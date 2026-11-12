@@ -484,7 +484,8 @@ pub struct Framed {
     pub payload: Vec<u8>,
     /// The frame's contents as they arrived (the data length, then the zlib
     /// stream) when it was compressed, copied for the caller; None when it was
-    /// not, or when a version adapter renumbered the packet.
+    /// not, or when a version adapter or an older client's renumbering changed
+    /// the packet.
     pub compressed: Option<Vec<u8>>,
 }
 impl From<Packet> for Framed {
@@ -1429,6 +1430,104 @@ mod tests {
             assert!(refusals[0].0.contains(message), "{}", refusals[0].0);
             assert!(refusals.iter().all(|r| *r == refusals[0]), "{refusals:?}");
         }
+    }
+
+    /// A login disconnect (id 0) whose text is long enough to be compressed.
+    fn login_disconnect() -> Vec<u8> {
+        let mut w = crate::buf::Writer::new();
+        w.varint(crate::ids::login::clientbound::LOGIN_DISCONNECT);
+        w.string(&format!(
+            "{{\"text\":\"{}\"}}",
+            "closed for the night ".repeat(8)
+        ));
+        w.data
+    }
+    /// A login hello (id 0) from a player.
+    fn login_hello() -> Vec<u8> {
+        let mut w = crate::buf::Writer::new();
+        w.varint(crate::ids::login::serverbound::HELLO);
+        w.string("Kim_the_long_one");
+        w.data.extend_from_slice(&[7; 16]);
+        w.data
+    }
+    /// A connection to a server of an older release, past its handshake (in login), and the
+    /// server's end of the pipe.
+    fn adapted() -> (Connection, Connection) {
+        let (a, b) = Pipe::pair();
+        let mut c = Connection::local(a);
+        c.adapt(crate::adapter::ServerVersion::V26_2);
+        let mut intention = crate::buf::Writer::new();
+        intention.varint(crate::ids::handshake::serverbound::INTENTION);
+        intention.varint(crate::PROTOCOL_VERSION);
+        intention.string("localhost");
+        intention.u16(25565);
+        intention.varint(2);
+        c.send(&intention.data).unwrap();
+        c.set_compression(16);
+        let mut server = Connection::local(b);
+        assert_eq!(server.recv().unwrap().0, 0, "the handshake");
+        server.set_compression(16);
+        (c, server)
+    }
+
+    /// `recv_framed` on a connection that renumbers what arrives gives no frame, a version
+    /// adapter's packet or an older client's: the packet it returns is not the frame's.
+    #[test]
+    fn recv_framed_gives_no_frame_for_a_renumbered_packet() {
+        let (mut c, mut server) = adapted();
+        server.send(&login_disconnect()).unwrap();
+        let got = c.reader.recv_framed().unwrap();
+        assert_eq!(got.id, crate::ids::login::clientbound::LOGIN_DISCONNECT);
+        assert_eq!(got.compressed, None, "a version adapter's packet");
+
+        let (a, b) = Pipe::pair();
+        let mut client = Connection::local(b);
+        client.set_compression(16);
+        let mut c = Connection::local(a);
+        c.serve_older(crate::adapter::ServerVersion::V26_2);
+        c.set_compression(16);
+        client.send(&login_hello()).unwrap();
+        let got = c.reader.recv_framed().unwrap();
+        assert_eq!(got.id, crate::ids::login::serverbound::HELLO);
+        assert_eq!(got.compressed, None, "an older client's packet");
+    }
+
+    /// `buffered_framed` follows `buffered`: an older client's packet (renumbered) has no frame;
+    /// with a version adapter, which `buffered` does not apply, the packet comes as it arrived and
+    /// so does its frame.
+    #[test]
+    fn buffered_framed_gives_a_frame_only_for_a_packet_as_it_arrived() {
+        let (a, b) = Pipe::pair();
+        let mut client = Connection::local(b);
+        client.set_compression(16);
+        let mut c = Connection::local(a);
+        c.serve_older(crate::adapter::ServerVersion::V26_2);
+        c.set_compression(16);
+        let mut bytes = Vec::new();
+        let hello = login_hello();
+        client
+            .writer
+            .frame_into(&frame::contents(&hello, Some(16)).unwrap(), &mut bytes);
+        let (_, mut reader, _) = c.detach();
+        reader.read_from(&mut &bytes[..]).unwrap();
+        let got = reader.buffered_framed().unwrap().expect("the hello");
+        assert_eq!(got.id, crate::ids::login::serverbound::HELLO);
+        assert_eq!(got.compressed, None, "an older client's packet");
+
+        let (c, mut server) = adapted();
+        let disconnect = login_disconnect();
+        let sent = frame::contents(&disconnect, Some(16)).unwrap();
+        let mut bytes = Vec::new();
+        server.writer.frame_into(&sent, &mut bytes);
+        let (_, mut reader, _) = c.detach();
+        reader.read_from(&mut &bytes[..]).unwrap();
+        let got = reader.buffered_framed().unwrap().expect("the disconnect");
+        assert_eq!((got.id, &got.payload[..]), (0, &disconnect[1..]));
+        assert_eq!(
+            got.compressed,
+            Some(sent),
+            "a version adapter's packet, unchanged"
+        );
     }
 
     #[test]
