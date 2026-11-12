@@ -8572,9 +8572,7 @@ impl Game<'_> {
             .clone();
         let held = held?;
         let above = self.world.block(hit.pos[0], hit.pos[1] + 1, hit.pos[2]);
-        let under_water = registry
-            .state(above)
-            .is_some_and(|s| s.name == "minecraft:water");
+        let under_water = super::cauldrons::is_under_water(self.res.facts(), above);
         let removes_dye = cauldron::removes_dye(self.items(), &held.item);
         let mut hand = DryHand {
             creative: self.creative,
