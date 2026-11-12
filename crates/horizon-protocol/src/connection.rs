@@ -475,6 +475,28 @@ impl Connection {
 /// compressed and they were asked for).
 type Packet = (i32, Vec<u8>, Option<Vec<u8>>);
 
+/// A packet with the frame it came in ([`ConnReader::recv_framed`]): a proxy
+/// whose two sides use the same threshold can send `compressed` on as it is
+/// ([`ConnWriter::send_contents`]) instead of compressing `payload` again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Framed {
+    pub id: i32,
+    pub payload: Vec<u8>,
+    /// The frame's contents as they arrived (the data length, then the zlib
+    /// stream) when it was compressed, copied for the caller; None when it was
+    /// not, or when a version adapter renumbered the packet.
+    pub compressed: Option<Vec<u8>>,
+}
+impl From<Packet> for Framed {
+    fn from((id, payload, compressed): Packet) -> Self {
+        Self {
+            id,
+            payload,
+            compressed,
+        }
+    }
+}
+
 /// The next frame in a reader's buffer.
 enum Next {
     Packet(Packet),
@@ -493,6 +515,15 @@ impl ConnReader {
     /// Block until a whole packet arrives: (id, payload).
     pub fn recv(&mut self) -> Result<(i32, Vec<u8>)> {
         self.recv_with(false).map(|(id, payload, _)| (id, payload))
+    }
+    /// [`Self::recv`], with the frame: read, inflated and checked as `recv`
+    /// does, and counted the same.
+    pub fn recv_framed(&mut self) -> Result<Framed> {
+        self.recv_with(true).map(Framed::from)
+    }
+    /// [`Self::buffered`], with the frame.
+    pub fn buffered_framed(&mut self) -> Result<Option<Framed>> {
+        Ok(self.buffered_with(true)?.map(Framed::from))
     }
     /// [`Self::recv`], keeping a compressed frame's contents when `keep_frame`
     /// is set and no adapter renumbers what arrives.
@@ -1163,6 +1194,62 @@ mod tests {
         let (id, payload) = c.recv().unwrap();
         assert_eq!((id, payload.as_slice()), (3, &b"after"[..]));
         server.join().unwrap();
+    }
+
+    /// A body of `len` bytes (its id first) that does not compress to nothing.
+    fn body_of(id: u8, len: usize) -> Vec<u8> {
+        let mut body = vec![id];
+        body.extend((1..len).map(|i| (i * 31 % 251) as u8));
+        body
+    }
+
+    /// The frame a framed read gives is, byte for byte, the frame's contents
+    /// the sender wrote, for bodies around the threshold and far past it, with
+    /// encryption on; a body under the threshold has none.
+    #[test]
+    fn a_framed_read_gives_the_frame_as_it_was_sent() {
+        let (a, b) = Pipe::pair();
+        let lens = [1, 2, 63, 64, 65, 300, 4000, 70_000, 200_000];
+        let mut sender = Connection::local(b);
+        sender.set_compression(64);
+        sender.enable_encryption(&[5; 16]);
+        let mut c = Connection::local(a);
+        c.set_compression(64);
+        c.enable_encryption(&[5; 16]);
+        for (i, &len) in lens.iter().enumerate() {
+            let body = body_of(i as u8 + 1, len);
+            let sent = frame::contents(&body, Some(64)).unwrap();
+            sender.writer.send_contents(&sent).unwrap();
+            let got = c.reader.recv_framed().unwrap();
+            assert_eq!((got.id, &got.payload[..]), (i32::from(body[0]), &body[1..]));
+            let expected = (len >= 64).then_some(sent);
+            assert_eq!(got.compressed, expected, "body of {len} bytes");
+        }
+        assert_eq!(
+            c.reader.counters.received.load(Ordering::Relaxed),
+            lens.len() as i64
+        );
+    }
+
+    /// With compression off no frame is compressed, so none is given.
+    #[test]
+    fn no_frame_with_compression_off() {
+        let (a, b) = Pipe::pair();
+        let mut sender = Connection::local(b);
+        let mut c = Connection::local(a);
+        for len in [1, 300, 70_000] {
+            let body = body_of(4, len);
+            sender.send(&body).unwrap();
+            let got = c.reader.recv_framed().unwrap();
+            assert_eq!(
+                got,
+                Framed {
+                    id: 4,
+                    payload: body[1..].to_vec(),
+                    compressed: None
+                }
+            );
+        }
     }
 
     #[test]
