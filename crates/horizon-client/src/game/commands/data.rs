@@ -425,6 +425,14 @@ impl Game<'_> {
                     // random (Entity.random) goes on, as a spawn egg's entity
                     // data finds it.
                     slot.random = old.random.clone();
+                    // LivingEntity.readAdditionalSaveData makes a saved Brain
+                    // again from that random: an armadillo's sensors are delayed
+                    // anew (the merged tag always has one).
+                    if slot.species() == horizon_client::mobs::Species::Armadillo
+                        && tag.get("Brain").is_some()
+                    {
+                        horizon_client::mobs::armadillo::delay_sensors(slot);
+                    }
                     // Entity.load keeps the unsaved Allay.jukeboxPos and
                     // DATA_DANCING of the entity it loads into.
                     if slot.species() == horizon_client::mobs::Species::Allay {

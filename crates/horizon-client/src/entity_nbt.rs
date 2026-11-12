@@ -2566,24 +2566,15 @@ pub fn mob_from_nbt_with_random(
         }
         restore_warden_owned_memories(&mut m, tag);
     }
-    // Armadillo.readAdditionalSaveData: the saved state through `switchToState`
-    // (`onSyncedDataUpdated` then restarts the time in that state), idle for a
-    // save that names none; then the time to the next scute when saved. Absent,
-    // it stays the constructor's draw (`Mob::new`, `pickNextScuteDropTime`): no
-    // second draw from the armadillo's random.
     if m.species() == crate::mobs::Species::Armadillo {
-        // LivingEntity.readAdditionalSaveData, before the armadillo's own
-        // fields: a saved `Brain` makes the brain again, its sensors delayed.
-        if tag.get("Brain").is_some() {
-            crate::mobs::armadillo::delay_sensors(&mut m);
-        }
-        crate::mobs::armadillo::set_state(
+        let state = text(tag.get("state"));
+        let scute_time = number(tag.get("scute_time")).map(|t| t as i32);
+        crate::mobs::armadillo::load(
             &mut m,
-            crate::mobs::armadillo::state_by_name(text(tag.get("state")).as_deref()),
+            tag.get("Brain").is_some(),
+            state.as_deref(),
+            scute_time,
         );
-        if let Some(t) = number(tag.get("scute_time")) {
-            m.extra.egg_time = t as i32;
-        }
     }
     if m.species() == crate::mobs::Species::Ravager {
         m.extra.counter = number(tag.get("AttackTick")).unwrap_or(0) as i32;

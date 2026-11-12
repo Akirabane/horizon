@@ -77,6 +77,22 @@ pub fn register(m: &mut Mob) {
     m.extra.egg_time = super::ai::next_scute_time(m);
 }
 
+/// `Armadillo.readAdditionalSaveData`, after `LivingEntity`'s, which makes the
+/// brain again (its sensors delayed) when the tag has a `Brain`: the saved
+/// state through `switchToState` (`onSyncedDataUpdated` then restarts the time
+/// in that state), idle for a save that names none; then the time to the next
+/// scute when saved. Absent, it stays the constructor's draw: no second draw
+/// from the armadillo's random.
+pub fn load(m: &mut Mob, brain: bool, state: Option<&str>, scute_time: Option<i32>) {
+    if brain {
+        delay_sensors(m);
+    }
+    set_state(m, state_by_name(state));
+    if let Some(t) = scute_time {
+        m.extra.egg_time = t;
+    }
+}
+
 /// `Brain.Provider.makeBrain`: `Sensor.randomlyDelayStart` for each sensor of
 /// `BRAIN_PROVIDER`, in its order, from the armadillo's own random: nearest
 /// living entities, hurt by, food temptations and nearest adult (`nextInt(20)`
