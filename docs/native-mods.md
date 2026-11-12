@@ -3553,7 +3553,7 @@ while no mod asks for it.
   server tick (paused ones too) while its spans are recorded, the hook gets the pass's wall time, the server thread's
   CPU time in it (None where the system doesn't tell) and its spans (`TickSpan`: name, wall and CPU milliseconds,
   depth; summed by name in the order first seen, `tick_mobs` inside `tick`). A dedicated server records them anyway
-  (its slow-tick log), so there the hook fires every tick; elsewhere it fires while `native_spans(true)`,
+  (its slow ring), so there the hook fires every tick; elsewhere it fires while `native_spans(true)`,
   `HORIZON_SPIKES` or a performance report wants them: one switch shared by all, on while anyone wants it, which costs
   two clock reads a step on every thread. `native_mob_cost_sampling(true)` times every mob's own tick (riders inside)
   by level and type until it is turned off, apart from `horizon-report`'s sampling, so both can run;
@@ -3799,7 +3799,8 @@ Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global l
   a client too, so make the same change each time; a `/reload` may keep the tables already loaded. It is a free function in
   `crates/horizon-world/src/loot.rs`, so a helper injected there compiles inside `horizon-world`, without `crate::game`.
 - **`native_loot_drops(context, drops)`**: the items a broken block or a dead mob is about to drop, after its tables rolled (a
-  mob's worn, held and carried items and inventory too, not an enderman's carried block or a copper golem's preserved equipment).
+  mob's worn, held and carried items and inventory too, not an enderman's carried block, the nether star a wither leaves or a
+  copper golem's preserved equipment).
   Add, change or take out stacks; empty ones don't drop. `NativeLootDrops` says what dropped them: its own loot table (empty when
   none rolled), the dimension, the origin, the block's position and state or the mob's id and type, the player who broke or killed
   it (a mob names one only while it remembers the player's hit, 100 ticks), the tool and an explosion's radius. It hears blocks
