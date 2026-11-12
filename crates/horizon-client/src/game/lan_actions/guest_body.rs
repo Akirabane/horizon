@@ -1,4 +1,48 @@
+//! Restore the guest's first body without borrowing another player's RNG.
 use super::*;
+use horizon_client::{
+    lan::guest::Guest,
+    motion::{MotionResources, PlayerMotion},
+};
+use horizon_core::geometry::Vec3;
+
+pub(super) fn initialize(resources: &MotionResources, guest: &mut Guest) {
+    let p = Vec3::new(guest.position[0], guest.position[1], guest.position[2]);
+    guest.motion = PlayerMotion::new(resources, p).ok().map(Box::new);
+    let entity_id = guest.entity_id as u32;
+    if let Some(motion) = guest.motion.as_mut() {
+        motion.random = horizon_client::mobs::entity_random(entity_id, p);
+    }
+    // The first body after joining burns, breathes and falls on as saved.
+    let g = &mut *guest;
+    if let Some(saved) = g.loaded_body.take()
+        && let Some(m) = g.motion.as_mut()
+    {
+        saved.apply(m);
+        // LivingEntity.readAdditionalSaveData: the saved attributes.
+        let _ = m.apply_saved_attributes(g.saved.as_ref().and_then(|t| t.get("attributes")));
+    }
+    // ServerPlayer.restoreFrom: a body that follows another takes its
+    // attributes (a scale of 0.1 stays 0.1 after a respawn or a trip
+    // to another level).
+    let g = &mut *guest;
+    if let Some(carried) = g.carried_attributes.take()
+        && let Some(m) = g.motion.as_mut()
+    {
+        let _ = m.apply_saved_attributes(Some(&carried));
+    }
+    // The saved golden hearts go on the first body of a player who
+    // has been here before.
+    let saved = guest.saved_absorption.take();
+    if let (Some(m), Some(amount)) = (guest.motion.as_mut(), saved) {
+        let _ = m.internal_set_absorption(amount);
+    }
+    let kept = guest.logs_kept.take();
+    if let (Some(m), Some((hurts, attacks))) = (guest.motion.as_mut(), kept) {
+        m.hurt_log = hurts;
+        m.attack_log = attacks;
+    }
+}
 
 impl Game<'_> {
     /// The guest's body on the server each tick: ServerPlayer.tick's damage
@@ -24,7 +68,6 @@ impl Game<'_> {
             return;
         };
         let moves = std::mem::take(&mut g.moves);
-        let single_upward = moves.len() == 1 && moves[0].0[1] > 0.0;
         let from_ground = if moves.is_empty() {
             g.on_ground
         } else {
@@ -77,87 +120,10 @@ impl Game<'_> {
             let freeze_immune = game.wears_freeze_immune();
             let burn_immune = game.wears_burn_from_stepping_immunity();
             let boat = game.riding_boat_fluid_box();
-            let (tick_movement, start, travelled, reset) = {
-                let Some(player) = game.player.as_mut() else {
-                    return (Vec::new(), None);
-                };
-                player.fluids.boat = boat;
-                let mut w = MotionWorld {
-                    entities: &[],
-                    player,
-                    scene: &mut game.world,
-                    assets: &game.pack.assets,
-                    collision_binding: game.collision,
-                    resources: game.motion,
-                    health: &game.health_resources,
-                };
-                w.player.health.advance_clock();
-                let _ = w.fluid_base_tick();
-                w.player.ground.on_ground = from_ground;
-                // Player.aiStep: a flying player that isn't riding starts every tick
-                // with no fall distance, so flying down in creative and switching to
-                // survival lands without the flight's distance.
-                if w.player.flying && !riding {
-                    w.player.fall_distance = 0.0;
-                }
-                let travelled: Vec<[f64; 3]> = moves.iter().map(|m| m.0).collect();
-                // The tick's whole movement, for the delta movement a glide's wall
-                // hit reads (`handleMovePlayer` gives the server copy the client's
-                // own movement).
-                let tick_movement = travelled.iter().fold(Vec3::ZERO, |sum, d| {
-                    sum.add_vector(Vec3::new(d[0], d[1], d[2]))
-                });
-                // Entity.move's movementThisTick: each move, from where the
-                // tick's first one started.
-                let end = w.player.position;
-                let start = travelled
-                    .iter()
-                    .fold(end, |p, d| p.subtract(Vec3::new(d[0], d[1], d[2])));
-                w.player.history.clear();
-                let mut from = start;
-                for d in &travelled {
-                    let delta = Vec3::new(d[0], d[1], d[2]);
-                    let to = from.add_vector(delta);
-                    w.player
-                        .history
-                        .add(horizon_world::entity_move::MovementRecord {
-                            from,
-                            to,
-                            original: Some(delta),
-                        });
-                    from = to;
-                }
-                // handleMovePlayer moves the player before it checks the fall: a
-                // cobweb or a sweet berry bush it moves through has already made it
-                // forget the fall (`makeStuckInBlock`), so landing in one is safe.
-                let _ = w.server_stuck_in_blocks(start);
-                let mut reset = None;
-                for (moved, on_ground) in moves {
-                    let movement = Vec3::new(moved[0], moved[1], moved[2]);
-                    let landed = (|| -> horizon_client::Result<()> {
-                        w.set_on_ground_with_movement(on_ground, false, movement)?;
-                        let pos = w.legacy_on_position()?;
-                        let state = w.block_state(pos)?;
-                        w.check_fall_damage(moved[1], on_ground, state, pos)?;
-                        if single_upward {
-                            reset = Some(movement);
-                            Ok(())
-                        } else {
-                            w.check_movement_statistics(movement)
-                        }
-                    })();
-                    if landed.is_err() {
-                        break;
-                    }
-                }
-                (tick_movement, start, travelled, reset)
-            };
-            if reset.is_some() {
-                game.reset_single_upward_guest_fall();
-            }
             let Some(player) = game.player.as_mut() else {
                 return (Vec::new(), None);
             };
+            player.fluids.boat = boat;
             let mut w = MotionWorld {
                 entities: &[],
                 player,
@@ -167,8 +133,58 @@ impl Game<'_> {
                 resources: game.motion,
                 health: &game.health_resources,
             };
-            if let Some(movement) = reset {
-                let _ = w.check_movement_statistics(movement);
+            w.player.health.advance_clock();
+            let _ = w.fluid_base_tick();
+            w.player.ground.on_ground = from_ground;
+            // Player.aiStep: a flying player that isn't riding starts every tick
+            // with no fall distance, so flying down in creative and switching to
+            // survival lands without the flight's distance.
+            if w.player.flying && !riding {
+                w.player.fall_distance = 0.0;
+            }
+            let travelled: Vec<[f64; 3]> = moves.iter().map(|m| m.0).collect();
+            // The tick's whole movement, for the delta movement a glide's wall
+            // hit reads (`handleMovePlayer` gives the server copy the client's
+            // own movement).
+            let tick_movement = travelled.iter().fold(Vec3::ZERO, |sum, d| {
+                sum.add_vector(Vec3::new(d[0], d[1], d[2]))
+            });
+            // Entity.move's movementThisTick: each move, from where the
+            // tick's first one started.
+            let end = w.player.position;
+            let start = travelled
+                .iter()
+                .fold(end, |p, d| p.subtract(Vec3::new(d[0], d[1], d[2])));
+            w.player.history.clear();
+            let mut from = start;
+            for d in &travelled {
+                let delta = Vec3::new(d[0], d[1], d[2]);
+                let to = from.add_vector(delta);
+                w.player
+                    .history
+                    .add(horizon_world::entity_move::MovementRecord {
+                        from,
+                        to,
+                        original: Some(delta),
+                    });
+                from = to;
+            }
+            // handleMovePlayer moves the player before it checks the fall: a
+            // cobweb or a sweet berry bush it moves through has already made it
+            // forget the fall (`makeStuckInBlock`), so landing in one is safe.
+            let _ = w.server_stuck_in_blocks(start);
+            for (moved, on_ground) in moves {
+                let movement = Vec3::new(moved[0], moved[1], moved[2]);
+                let landed = (|| -> horizon_client::Result<()> {
+                    w.set_on_ground_with_movement(on_ground, false, movement)?;
+                    let pos = w.legacy_on_position()?;
+                    let state = w.block_state(pos)?;
+                    w.check_fall_damage(moved[1], on_ground, state, pos)?;
+                    w.check_movement_statistics(movement)
+                })();
+                if landed.is_err() {
+                    break;
+                }
             }
             // A ServerPlayer travels on the server too
             // (MoveSimulationType.AUTHORITATIVE_SIDE_AND_SERVER), so every tick
@@ -206,14 +222,8 @@ impl Game<'_> {
                 w.server_player_pose_tick()
             };
             let mut events = std::mem::take(&mut w.player.events);
-            // LayeredCauldronBlock.handleEntityOnFireInside along those moves.
-            for event in &events {
-                match event {
-                    MotionEvent::CauldronExtinguish { pos } => game.cauldron_extinguish(*pos),
-                    MotionEvent::PowderSnowMelt { pos } => game.powder_snow_melt(*pos),
-                    _ => {}
-                }
-            }
+            // Powder snow and cauldrons put the fire out along those moves.
+            game.block_extinguish_player(&events);
             // Entity.baseTick: rain puts out a burning player.
             game.rain_extinguish_player();
             // WitherRoseBlock.entityInside along those moves.
@@ -428,3 +438,6 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
