@@ -1055,14 +1055,7 @@ impl Game<'_> {
                                 .unwrap_or(Tag::Compound(Default::default())),
                             v => horizon_client::scoreboard::json_to_tag(v),
                         };
-                        edit_components(&mut stack, |c| {
-                            let mut data = match c.get(&"minecraft:custom_data".into()) {
-                                Some(t @ Tag::Compound(_)) => t.clone(),
-                                _ => Tag::Compound(Default::default()),
-                            };
-                            merge_compound(&mut data, &tag);
-                            c.insert("minecraft:custom_data".into(), data);
-                        });
+                        set_custom_data(&mut stack, &tag);
                     }
                     "minecraft:set_components" => {
                         let patch = m["components"].clone();
@@ -1571,6 +1564,22 @@ fn edit_components(stack: &mut ItemStack, f: impl FnOnce(&mut horizon_world::nbt
     stack.damage = damage;
     stack.extra = extra;
     stack.tidy();
+}
+/// `SetCustomDataFunction.run`: `CustomData.update(stack, tag -> tag.merge(value))`.
+fn set_custom_data(stack: &mut ItemStack, value: &Tag) {
+    edit_components(stack, |c| {
+        let mut data = match c.get(&"minecraft:custom_data".into()) {
+            Some(t @ Tag::Compound(_)) => t.clone(),
+            _ => Tag::Compound(Default::default()),
+        };
+        merge_compound(&mut data, value);
+        // Vanilla CustomData.update removes the component when the result is empty.
+        if matches!(&data, Tag::Compound(m) if m.is_empty()) {
+            c.remove(&"minecraft:custom_data".into());
+        } else {
+            c.insert("minecraft:custom_data".into(), data);
+        }
+    });
 }
 /// `CompoundTag.merge`: nested compounds merge, other values replace.
 fn merge_compound(into: &mut Tag, from: &Tag) {
@@ -2863,3 +2872,16 @@ mod registered_slot_source_preservation_tests {
 
 #[cfg(test)]
 include!("items/registered_source_qualification_v2_tests.rs");
+
+#[cfg(test)]
+mod set_custom_data_tests {
+    use super::*;
+
+    #[test]
+    fn merging_an_empty_tag_into_a_stack_without_custom_data_adds_no_component() {
+        let mut stack = ItemStack::new("minecraft:stick", 1);
+        set_custom_data(&mut stack, &Tag::Compound(Default::default()));
+        let saved = horizon_client::item_data::encode_components(&stack);
+        assert!(saved.is_none_or(|c| c.get("minecraft:custom_data").is_none()));
+    }
+}
