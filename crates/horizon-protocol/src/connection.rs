@@ -471,9 +471,13 @@ impl Connection {
     }
 }
 
+/// A packet read off a frame: (id, payload, the frame's contents when it was
+/// compressed and they were asked for).
+type Packet = (i32, Vec<u8>, Option<Vec<u8>>);
+
 /// The next frame in a reader's buffer.
 enum Next {
-    Packet((i32, Vec<u8>)),
+    Packet(Packet),
     /// A frame with no packet in it.
     Empty,
     /// No whole frame yet: the bytes it needs, once its length is known (0 before).
@@ -488,25 +492,31 @@ impl ConnReader {
     }
     /// Block until a whole packet arrives: (id, payload).
     pub fn recv(&mut self) -> Result<(i32, Vec<u8>)> {
-        if let Some(packet) = self.adapter.as_ref().and_then(|a| a.next_incoming()) {
-            return Ok(packet);
+        self.recv_with(false).map(|(id, payload, _)| (id, payload))
+    }
+    /// [`Self::recv`], keeping a compressed frame's contents when `keep_frame`
+    /// is set and no adapter renumbers what arrives.
+    fn recv_with(&mut self, keep_frame: bool) -> Result<Packet> {
+        if let Some((id, payload)) = self.adapter.as_ref().and_then(|a| a.next_incoming()) {
+            return Ok((id, payload, None));
         }
+        let keep_frame = keep_frame && self.adapter.is_none() && self.older_client.is_none();
         loop {
-            match self.next()? {
-                Next::Packet((id, payload)) if self.older_client.is_some() => {
+            match self.next(keep_frame)? {
+                Next::Packet((id, payload, _)) if self.older_client.is_some() => {
                     let client = self.older_client.as_ref().expect("checked");
-                    if let Some(packet) = client.serverbound(id, payload)? {
-                        return Ok(packet);
+                    if let Some((id, payload)) = client.serverbound(id, payload)? {
+                        return Ok((id, payload, None));
                     }
                 }
                 Next::Packet(packet) => match &self.adapter {
                     None => return Ok(packet),
                     Some(a) => {
-                        if let Some(packet) = a.clientbound(packet.0, packet.1)? {
-                            return Ok(packet);
+                        if let Some((id, payload)) = a.clientbound(packet.0, packet.1)? {
+                            return Ok((id, payload, None));
                         }
-                        if let Some(packet) = a.next_incoming() {
-                            return Ok(packet);
+                        if let Some((id, payload)) = a.next_incoming() {
+                            return Ok((id, payload, None));
                         }
                     }
                 },
@@ -519,12 +529,20 @@ impl ConnReader {
     /// more: for a detached reader, after [`Self::read_from`]. Only an older
     /// client's renumbering applies (a server's connection has no other).
     pub fn buffered(&mut self) -> Result<Option<(i32, Vec<u8>)>> {
+        Ok(self
+            .buffered_with(false)?
+            .map(|(id, payload, _)| (id, payload)))
+    }
+    /// [`Self::buffered`], keeping a compressed frame's contents when
+    /// `keep_frame` is set and no older client's renumbering applies.
+    fn buffered_with(&mut self, keep_frame: bool) -> Result<Option<Packet>> {
+        let keep_frame = keep_frame && self.older_client.is_none();
         loop {
-            match self.next()? {
-                Next::Packet((id, payload)) if self.older_client.is_some() => {
+            match self.next(keep_frame)? {
+                Next::Packet((id, payload, _)) if self.older_client.is_some() => {
                     let client = self.older_client.as_ref().expect("checked");
-                    if let Some(packet) = client.serverbound(id, payload)? {
-                        return Ok(Some(packet));
+                    if let Some((id, payload)) = client.serverbound(id, payload)? {
+                        return Ok(Some((id, payload, None)));
                     }
                 }
                 Next::Packet(packet) => return Ok(Some(packet)),
@@ -547,8 +565,9 @@ impl ConnReader {
     fn next_header(&self) -> Result<Option<(usize, usize)>> {
         frame::header(&self.buffer[self.start..self.end])
     }
-    /// Take the next frame off the buffer, if it is whole.
-    fn next(&mut self) -> Result<Next> {
+    /// Take the next frame off the buffer, if it is whole; with `keep_frame`, a
+    /// compressed frame's contents come out with its packet.
+    fn next(&mut self, keep_frame: bool) -> Result<Next> {
         // Read the VarInt21 length once; the same prefix is used to locate
         // the payload and to determine whether the full frame is available.
         let Some((prefix, len)) = self.next_header()? else {
@@ -560,7 +579,7 @@ impl ConnReader {
         }
         let frame = self.start + prefix..self.start + wanted;
         self.start = frame.end;
-        Ok(match self.packet(frame)? {
+        Ok(match self.packet(frame, keep_frame)? {
             Some(packet) => {
                 self.counters.received.fetch_add(1, Ordering::Relaxed);
                 Next::Packet(packet)
@@ -570,8 +589,14 @@ impl ConnReader {
     }
     /// The packet in `buffer[frame]`, or `None` for a frame with no packet in it:
     /// vanilla's PacketDecoder only decodes a packet from a readable buffer, so an
-    /// empty compressed frame is skipped and the connection stays up.
-    fn packet(&mut self, frame: std::ops::Range<usize>) -> Result<Option<(i32, Vec<u8>)>> {
+    /// empty compressed frame is skipped and the connection stays up. With
+    /// `keep_frame`, a compressed frame's contents (the data length, then the
+    /// zlib stream) come with the packet, copied.
+    fn packet(
+        &mut self,
+        frame: std::ops::Range<usize>,
+        keep_frame: bool,
+    ) -> Result<Option<Packet>> {
         let frame = &self.buffer[frame];
         match frame::body(frame, self.threshold, &mut self.inflater)? {
             frame::Body::Plain(at) => {
@@ -581,14 +606,14 @@ impl ConnReader {
                 }
                 let mut r = Reader::new(body);
                 let id = r.varint()?;
-                Ok(Some((id, body[r.position()..].to_vec())))
+                Ok(Some((id, body[r.position()..].to_vec(), None)))
             }
             frame::Body::Inflated(mut body) => {
                 let mut r = Reader::new(&body);
                 let id = r.varint()?;
                 let at = r.position();
                 body.drain(..at);
-                Ok(Some((id, body)))
+                Ok(Some((id, body, keep_frame.then(|| frame.to_vec()))))
             }
         }
     }
