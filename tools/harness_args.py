@@ -4,8 +4,11 @@ The harnesses run `tools/test_command_exec_parity.py`, which reads `--work-dir`
 with argparse: a value may be separate (`--work-dir PATH`) or one argument
 (`--work-dir=PATH`), and the last one wins. A harness that appends its own
 default after the caller's therefore replaces the directory they asked for.
+Capture-preserving harnesses use a fresh automatic default on every run, so
+earlier oracle output stays intact without blocking the next run.
 """
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -30,6 +33,17 @@ def ensure_work_dir(default: Path, argv=None) -> Path:
         argv += ['--work-dir', str(default)]
         chosen = str(default)
     return Path(chosen)
+
+
+def ensure_fresh_work_dir(default: Path, argv=None) -> Path:
+    """Keep an explicit `--work-dir`; otherwise create a fresh sibling of `default` and retain it as evidence."""
+    argv = sys.argv if argv is None else argv
+    if named_work_dir(argv) is not None:
+        return ensure_work_dir(default, argv)
+    default.parent.mkdir(parents=True, exist_ok=True)
+    directory = Path(tempfile.mkdtemp(prefix=default.name + '-', dir=default.parent))
+    print(f'Capture directory: {directory.resolve()}', file=sys.stderr)
+    return ensure_work_dir(directory, argv)
 
 
 def require_work_dir(argv=None) -> Path:

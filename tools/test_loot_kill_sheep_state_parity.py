@@ -56,7 +56,7 @@ if __name__=='__main__':
  ref=None
  if '--reference' in sys.argv:
   i=sys.argv.index('--reference');ref=Path(sys.argv[i+1]).read_bytes();del sys.argv[i:i+2]
- build=harness_args.ensure_work_dir(Path('.local/h036/capture')).resolve();assert not (build/'vanilla.jsonl').exists();ops=program();rows=[o for o in ops if o['op']=='cmd' and o.get('record',True)]
+ build=harness_args.ensure_fresh_work_dir(Path('.local/h036/capture')).resolve();assert not (build/'vanilla.jsonl').exists();ops=program();rows=[o for o in ops if o['op']=='cmd' and o.get('record',True)]
  build.mkdir(parents=True,exist_ok=True);(build/'declaration.json').write_text(json.dumps(dict(script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),records=len(rows),labels=[o['label'] for o in rows],diagnostics=[o['label'] for o in ops if o.get('trace')],contract='Strict deterministic full records; random meat quantities/full output and full actor bodies are separate raw traces. No random quantity equality claim.'),indent=2)+'\n')
  driver.corpus_module.groups=lambda:[('Loot kill actual sheep state',ops)];sys.argv.append('--allow-gaps');driver.main()
  fresh=(build/'vanilla.jsonl').read_bytes()
