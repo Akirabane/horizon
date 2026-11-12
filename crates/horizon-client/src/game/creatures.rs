@@ -5,6 +5,7 @@
 mod bred_draws;
 mod effect_instance;
 use effect_instance::mob_effect_instance;
+mod mob_conversion;
 mod mob_geometry;
 mod mob_group;
 mod mob_islands;
@@ -844,8 +845,8 @@ impl Game<'_> {
             self.lan_entity_event(id as i32, event, at);
         }
     }
-    /// What a converted frog gets once its tadpole has grown up: the spawn
-    /// finalization of a conversion, then persistence.
+    /// What `Villager.thunderHit`'s and `Tadpole.ageUp`'s after-step gives the
+    /// new mob: the spawn finalization of a conversion, then persistence.
     fn finalize_converted(&mut self, id: u32) {
         let Some(at) = self.mobs.iter().find(|m| m.id == id).map(|m| m.position) else {
             return;
@@ -858,6 +859,8 @@ impl Game<'_> {
         let difficulty = self.local_difficulty([at.x, at.y, at.z]);
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             spawning::finalize(m, &facts, &difficulty);
+            // `Raider.finalizeSpawn`, which the witch's conversion reaches too.
+            horizon_client::mobs::raider::finalize(m, horizon_client::mobs::raider::Reason::Other);
             m.persistent = true;
         }
     }
@@ -866,19 +869,24 @@ impl Game<'_> {
     /// its place with what `conversion::single` carries over, and the old
     /// mob's riders move onto it. A zombie that comes out of it rolls
     /// `Zombie.handleAttributes(special, CONVERSION)` (the
-    /// `postConversionStep` of its `ConversionTracker`).
+    /// `postConversionStep` of its `ConversionTracker`). `pre_checked` skips
+    /// `LivingConversionEvent.Pre`, which the lightning asks before it picks
+    /// its outcome.
     pub(super) fn convert_to(
         &mut self,
         from: &Mob,
         kind: &str,
         params: horizon_client::mobs::conversion::Params,
+        pre_checked: bool,
     ) -> Option<u32> {
         let t = self.res.mob_types().get(kind).cloned()?;
         // LivingConversionEvent.Pre: the caller already marked the mob removed,
         // so a canceled conversion puts it back as it was.
         let mut cancel = false;
         let from_kind = super::native_hooks::mob_kind(from);
-        self.native_living_conversion_pre(from.id, &from_kind, kind, &mut cancel);
+        if !pre_checked {
+            self.native_living_conversion_pre(from.id, &from_kind, kind, &mut cancel);
+        }
         if cancel {
             match self.mobs.iter_mut().find(|m| m.id == from.id) {
                 Some(kept) => kept.removed = false,
@@ -2876,23 +2884,12 @@ impl Game<'_> {
                         self.apply_setup(id, &setup);
                     }
                 }
-                MobEvent::Convert { from, kind, params } => {
-                    let id = self.convert_to(&from, kind, params);
-                    // `Piglin.finishConversion` and `Hoglin.finishConversion`:
-                    // the converted mob is nauseous for 10 seconds.
-                    if matches!(kind, "minecraft:zombified_piglin" | "minecraft:zoglin")
-                        && let Some(m) = self.mobs.iter_mut().find(|m| Some(m.id) == id)
-                    {
-                        m.add_effect("minecraft:nausea", 200, 0);
-                    }
-                    // `Tadpole.ageUp`: the frog is finalized for the
-                    // conversion and made persistent.
-                    if kind == "minecraft:frog"
-                        && let Some(id) = id
-                    {
-                        self.finalize_converted(id);
-                    }
-                }
+                MobEvent::Convert {
+                    mut from,
+                    kind,
+                    params,
+                    after,
+                } => self.convert_event(&mut from, kind, params, after),
                 MobEvent::ThrowItem {
                     mob,
                     stack,
@@ -6401,8 +6398,7 @@ impl Game<'_> {
                 } else {
                     "minecraft:red_mushroom"
                 };
-                drops.push((mushroom.into(), 5));
-                shear_puff = Some((feet, f64::from(m.height())));
+                let height = f64::from(m.height());
                 self.audio.play_bound(
                     "minecraft:entity.mooshroom.shear",
                     7,
@@ -6412,18 +6408,13 @@ impl Game<'_> {
                     None,
                 );
                 m.removed = true;
-                let setup = SpawnSetup {
-                    yaw: m.yaw,
-                    persistent: true,
-                    skip_finalize: true,
-                    ..Default::default()
-                };
-                let pos = [m.position.x, m.position.y, m.position.z];
-                self.handle_mob_events(vec![MobEvent::SpawnKind {
-                    kind: "minecraft:cow".into(),
-                    at: pos,
-                    setup,
-                }])?;
+                let from = m.clone();
+                // `MushroomCow.shear`: the puff and the mushrooms are the
+                // conversion's after-step, so a canceled one drops nothing.
+                if self.convert_mooshroom(&from) {
+                    drops.push((mushroom.into(), 5));
+                    shear_puff = Some((feet, height));
+                }
                 let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
                 self.post_game_event("minecraft:shear", feet, ctx);
                 self.damage_held_tool();
@@ -8404,6 +8395,7 @@ mod conversion_tag_tests {
                     &source,
                     &format!("minecraft:{to}"),
                     horizon_client::mobs::conversion::Params::KEEP_ALL,
+                    false,
                 )
                 .unwrap();
             assert_ne!(old_id, new_id);
