@@ -1068,7 +1068,7 @@ pub struct Extra {
     /// horse still rearing then goes on with the rider's keys until the rear
     /// ends (`tick` clears it).
     pub stand_sliding: bool,
-    /// Species scratch values (the wither's head targets and clocks).
+    /// Species scratch values (the wither's head targets and clocks, a ghast's power).
     pub ints: [i32; 6],
     pub counter: i32,
     /// Nautilus ATTACK_TARGET_COOLDOWN saved slot: None is absent,
