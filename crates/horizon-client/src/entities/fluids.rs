@@ -165,11 +165,7 @@ impl ExperienceOrb {
     /// `isEyeInFluid(FluidTags.WATER)` for the eye the scan reads, `0.425`
     /// above the orb's feet, `isInWater`, and `isInLava` (before
     /// `Entity.firstTick` is taken into account).
-    pub fn update_fluids(
-        &mut self,
-        world: &World,
-        fluids: &FluidResources,
-    ) -> (bool, bool, bool) {
+    pub fn update_fluids(&mut self, world: &World, fluids: &FluidResources) -> (bool, bool, bool) {
         let (water, lava, eye) = update_entity_fluids(
             self.bounds(),
             self.position,

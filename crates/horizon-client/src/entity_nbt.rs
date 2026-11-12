@@ -5919,6 +5919,7 @@ mod tests {
             health: 5,
             air: 300,
             following: None,
+            fall_distance: 0.0,
             fire_ticks: 0,
         };
         for (ticks, saved) in [(0, 0), (40, 40), (-1, -1), (300, 300), (40_000, -25_536)] {
