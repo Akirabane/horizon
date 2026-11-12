@@ -8618,7 +8618,7 @@ impl Game<'_> {
             self.snap_player_model_pitch();
         }
         self.occupy_bed(head);
-        self.award_custom_stat("sleep_in_bed", 1);
+        self.award_custom_stat(self.slept_in_bed_stat(state), 1);
         self.trigger_player("minecraft:slept_in_bed");
         self.stats.reset("custom", "minecraft:time_since_rest");
     }

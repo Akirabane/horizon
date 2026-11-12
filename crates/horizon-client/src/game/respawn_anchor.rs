@@ -497,6 +497,15 @@ impl Game<'_> {
         };
         rule.can_set_spawn.test(self.dark_outside())
     }
+    /// `AbstractBedBlock.getSleptInBedStatType`: the statistic sleeping in this
+    /// bed counts as, which a straw bed overrides.
+    pub(super) fn slept_in_bed_stat(&self, state: BlockStateId) -> &'static str {
+        if &*self.res.facts().get(state).name == "minecraft:straw_bed" {
+            "sleep_in_straw_bed"
+        } else {
+            "sleep_in_bed"
+        }
+    }
     /// `ServerPlayer.findRespawnAndUseSpawnBlock` for a config in the loaded
     /// dimension: position and angles, using an anchor's charge; a bed's
     /// stand-up spot. A forced point (`spawnpoint`) that is no anchor or bed
