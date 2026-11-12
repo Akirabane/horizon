@@ -8128,9 +8128,7 @@ impl Game<'_> {
                 );
             }
             self.trigger_block("minecraft:placed_block", target, stack);
-            if !self.creative {
-                *self.held_mut() = Some(ItemStack::new("minecraft:bucket", 1));
-            }
+            self.bucket_emptied(&stack.item);
             return Ok(UseResult::Success { swing: true });
         }
         if self.use_block_transformer(stack, hit.pos, hit.face)? {
