@@ -9983,7 +9983,7 @@ fn mob_source(damage: &Damage) -> HurtSource<'static> {
         Some(Who::Mob(id)) => id as i32,
         _ => 0,
     };
-    let melee = super::creatures::melee(damage.kind);
+    let melee = super::combat::melee(damage.kind);
     HurtSource {
         damage_type: super::creatures::source_damage_type(*damage),
         causing,

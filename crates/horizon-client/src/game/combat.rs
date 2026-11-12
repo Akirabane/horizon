@@ -826,6 +826,24 @@ fn fall_location_of(name: &str, trapdoor: bool) -> &'static str {
     }
 }
 
+/// Whether the causing entity deals `kind` itself, so it is the source's direct
+/// entity too: a melee hit (`DamageSources.mobAttack`, `playerAttack`, a mace's
+/// or a spear's, a ram's no-aggro blow), a sting, a sonic boom, thorns.
+pub(super) fn melee(kind: horizon_client::mobs::DamageKind) -> bool {
+    use horizon_client::mobs::DamageKind as K;
+    matches!(
+        kind,
+        K::PlayerAttack
+            | K::MaceSmash
+            | K::Spear
+            | K::MobAttack
+            | K::MobAttackNoAggro
+            | K::Sting
+            | K::SonicBoom
+            | K::Thorns
+    )
+}
+
 #[cfg(test)]
 mod fall_location_tests {
     use super::fall_location_of;

@@ -298,6 +298,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 | DamageKind::MaceSmash
                 | DamageKind::Spear
                 | DamageKind::MobAttack
+                | DamageKind::MobAttackNoAggro
         )
     {
         let from = [m.position.x, m.position.y, m.position.z];

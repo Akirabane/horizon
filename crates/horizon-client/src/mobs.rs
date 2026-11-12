@@ -558,6 +558,8 @@ pub enum DamageKind {
     /// `spear`: a stab of a spear (the player attack tags too).
     Spear,
     MobAttack,
+    /// `mob_attack_no_aggro`: a goat's ram, the one type in `#no_anger`.
+    MobAttackNoAggro,
     Arrow,
     Thrown,
     Fireball,
@@ -766,6 +768,8 @@ impl Damage {
                 | DamageKind::Stalagmite
                 | DamageKind::Starve
                 | DamageKind::Campfire
+                // `mob_attack` panics; its no-aggro twin is not in the tag.
+                | DamageKind::MobAttackNoAggro
         )
     }
     /// DamageTypeTags.BYPASSES_ARMOR
@@ -3600,12 +3604,7 @@ impl Mob {
         }
         self.last_damage = Some((source, i64::from(self.age)));
         self.last_direct = None;
-        if let Some(who) = source.attacker {
-            self.ai.hurt_by(who, self.age as i32);
-            if who == Who::Player {
-                self.ai.last_hurt_by_player = 100;
-            }
-        }
+        hurt_by::resolve(self, &source);
         // dealDefaultKnockback, unless the damage type is tagged no_knockback;
         // a source without a position knocks in a random direction.
         if knock && !source.no_knockback() {
