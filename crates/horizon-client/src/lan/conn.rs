@@ -1709,6 +1709,8 @@ fn play(
         counted,
         undrained,
     };
+    // The ServerPlayer is made with the configuration's client information (updateOptions).
+    shared.set_listed(parts.uuid, parts.info.allows_listing);
     let joined = Joined {
         conn,
         uuid: parts.uuid,
