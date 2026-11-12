@@ -521,6 +521,16 @@ def player_state():
         cmd('/attribute @s minecraft:max_health base reset'),
         cmd('/spawnpoint @s 8 230 8'),
         cmd('/setworldspawn 8 230 8'),
+        # Vanilla only checks the spawnable bounds, not a loaded chunk.
+        cmd('/setworldspawn 29999999 64 -30000000'),
+        cmd('/setworldspawn 30000000 64 0'),
+        cmd('/setworldspawn 0 64 -30000001'),
+        cmd('/setworldspawn 0 -20000000 0'),
+        cmd('/setworldspawn 0 20000000 0'),
+        cmd('/spawnpoint @s 30000000 64 0'),
+        cmd('/spawnpoint @s 29999999 64 29999999'),
+        cmd('/setworldspawn 8 230 8'),
+        cmd('/spawnpoint @s 8 230 8'),
         cmd('/tp @s 8.5 230 8.5'),
         cmd('/tp @s ~1 ~ ~'),
         cmd('/teleport @s 8.5 230 8.5 90 0'),
@@ -7236,6 +7246,28 @@ def thrown_projectile_rotation():
     return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 16},z={z0 - 16},dx=32,dy=32,dz=32]')
 
 
+def item_frame_rotation():
+    """#13848: `ItemFrame.setDirection` turns a frame with its facing (`yRot` from the 2D data value on a wall,
+    `xRot` 90 or -90 on a floor or ceiling), and `Entity.saveWithoutId` writes it as `Rotation`. A `Facing` out of
+    0..5 is `Direction.from3DDataValue`'s `abs(data % 6)`. Away from other groups: a forced chunk two columns
+    from another's keeps that one loaded but not ticking when it starts."""
+    x0, y0, z0 = 3200, 260, 3712
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd(f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 3} {z0 + 15} stone', False)]
+    frames = [('glow_item_frame', ''), ('item_frame', ',Facing:1b'), ('item_frame', ',Facing:2b'),
+              ('item_frame', ',Facing:3b'), ('glow_item_frame', ',Facing:4b'), ('item_frame', ',Facing:5b'),
+              ('item_frame', ',Facing:7b'), ('item_frame', ',Facing:-1b')]
+    for n, (kind, facing) in enumerate(frames, 1):
+        x = x0 + 1 + n
+        ops += [cmd(f'/setblock {x} {y0 + 5} {z0 + 8} air', False),
+                cmd(f'/summon {kind} {x}.5 {y0 + 5}.5 {z0 + 8}.5 {{UUID:[I;14100,0,{n},1],Fixed:1b{facing}}}',
+                    expect_result=1),
+                cmd(f'/data get entity 00003714-0000-0000-0000-{n:04x}00000001 Rotation'),
+                cmd(f'/data get entity 00003714-0000-0000-0000-{n:04x}00000001 Facing')]
+    return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 8} {z0 + 15} air', f'/forceload remove {x0} {z0}')
+
+
 def living_short_timers():
     """#13846: `LivingEntity` reads `HurtTime` and `DeathTime` with `getShortOr` and writes them back as `(short)`
     casts: a negative value stays."""
@@ -7824,26 +7856,36 @@ def comparator_setblock_output():
     return ops + setup('/tick unfreeze', f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
 
-def item_frame_rotation():
-    """#13848: `ItemFrame.setDirection` turns a frame with its facing (`yRot` from the 2D data value on a wall,
-    `xRot` 90 or -90 on a floor or ceiling), and `Entity.saveWithoutId` writes it as `Rotation`. A `Facing` out of
-    0..5 is `Direction.from3DDataValue`'s `abs(data % 6)`. Away from other groups: a forced chunk two columns
-    from another's keeps that one loaded but not ticking when it starts."""
-    x0, y0, z0 = 3200, 260, 3712
-    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
-           cmd(f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 3} {z0 + 15} stone', False)]
-    frames = [('glow_item_frame', ''), ('item_frame', ',Facing:1b'), ('item_frame', ',Facing:2b'),
-              ('item_frame', ',Facing:3b'), ('glow_item_frame', ',Facing:4b'), ('item_frame', ',Facing:5b'),
-              ('item_frame', ',Facing:7b'), ('item_frame', ',Facing:-1b')]
-    for n, (kind, facing) in enumerate(frames, 1):
-        x = x0 + 1 + n
-        ops += [cmd(f'/setblock {x} {y0 + 5} {z0 + 8} air', False),
-                cmd(f'/summon {kind} {x}.5 {y0 + 5}.5 {z0 + 8}.5 {{UUID:[I;14100,0,{n},1],Fixed:1b{facing}}}',
-                    expect_result=1),
-                cmd(f'/data get entity 00003714-0000-0000-0000-{n:04x}00000001 Rotation'),
-                cmd(f'/data get entity 00003714-0000-0000-0000-{n:04x}00000001 Facing')]
-    return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
-                       f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 8} {z0 + 15} air', f'/forceload remove {x0} {z0}')
+def explosion_player_experience():
+    """#11330: `Block.onExplosionHit` passes `dropExperience` = the blast's indirect source is a player (a primed
+    TNT's `owner`) to `spawnAfterBreak`, so blasted sculk pops its constant experience (catalyst 5, sculk 1) only
+    for a player's TNT, not for one whose `owner` is a zombie's UUID. Orbs may merge, so only whether any came
+    out is compared."""
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    x0, y0, z0 = 4096 - 384, 260, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
+            'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
+           cmd('/tick freeze', False)]
+    near = f'x={x0},y={y0 - 4},z={z0},dx=16,dy=16,dz=16'
+    for owner in (None, '@p', 'zombie'):
+        ops += [cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air', False),
+                cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} bedrock', False),
+                cmd(f'/setblock {x0 + 8} {y0} {z0 + 8} sculk_catalyst', expect_result=1),
+                cmd(f'/setblock {x0 + 7} {y0} {z0 + 8} sculk', expect_result=1),
+                cmd(f'/summon tnt {x0 + 8}.5 {y0 + 1} {z0 + 8}.5 {{fuse:1,Tags:["xp_tnt"]}}', expect_result=1)]
+        if owner == 'zombie':
+            ops.append(cmd(f'/summon zombie {x0 + 1}.5 {y0} {z0 + 1}.5 '
+                           f'{{NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:["xp_owner"]}}',
+                           expect_result=1))
+            owner = f'@e[type=zombie,tag=xp_owner,{near},limit=1]'
+        if owner:
+            ops.append(cmd(f'/data modify entity @e[type=tnt,tag=xp_tnt,limit=1] owner set from entity {owner} UUID'))
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 2}, cmd('/tick freeze', False),
+                cmd(f'/execute if block {x0 + 8} {y0} {z0 + 8} air', expect_result=1),
+                cmd(f'/execute if entity @e[type=experience_orb,{near}]', comparison='positive_result'),
+                cmd(f'/kill @e[type=!player,{near}]', False), cmd(f'/kill @e[type=item,{near}]', False)]
+    return ops + setup('/tick unfreeze', f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
 
 
 def groups():
@@ -8041,15 +8083,16 @@ def groups():
         ('piston mob bounce', piston_mob_bounce()),
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
-        ('item frame rotation', item_frame_rotation()),
         ('dispensed item escape', dispensed_item_escape()),
         ('command block last output', command_block_last_output()),
+        ('explosion player experience', explosion_player_experience()),
         ('comparator setblock output', comparator_setblock_output()),
         ('glide fall accumulation', glide_fall_accumulation()),
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),
         ('ominous spawner loaded fields', ominous_spawner_loaded_entity_fields()),
         ('thrown projectile rotation', thrown_projectile_rotation()),
+        ('item frame rotation', item_frame_rotation()),
         ('item fall distance', item_fall_distance()),
         ('beacon levels load', beacon_levels_load()),
         ('zombie villager summoned data', zombie_villager_summoned_data()),
