@@ -466,10 +466,10 @@ pub type BanList = UserList<BanEntry<NameAndId>>;
 pub type IpBanList = UserList<BanEntry<String>>;
 
 /// A list or cache file as vanilla reads it, through Guava's `Files.newReader(file, UTF_8)`: a byte
-/// sequence that is not UTF-8 becomes U+FFFD and the rest is kept. A file that cannot be read at all is
-/// an error, as before.
+/// sequence that is not UTF-8 becomes U+FFFD, grouped as Java's decoder groups it (`java_utf8`), and the
+/// rest is kept. A file that cannot be read at all is an error, as before.
 pub(crate) fn read_utf8(file: &std::path::Path) -> std::io::Result<String> {
-    Ok(String::from_utf8_lossy(&std::fs::read(file)?).into_owned())
+    Ok(horizon_protocol::buf::java_utf8(&std::fs::read(file)?))
 }
 
 #[cfg(test)]
@@ -590,6 +590,25 @@ mod tests {
             saved.contains("Caf\u{fffd}") && saved.contains("Kim"),
             "{saved}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Java's reader gives one U+FFFD for an encoded UTF-16 surrogate (`ED A0 80`, and its truncated
+    /// prefixes), where `String::from_utf8_lossy` gives two or three; both are read, not taken as missing.
+    #[test]
+    fn an_encoded_surrogate_is_one_replacement_as_java_reads_it() {
+        let dir = std::env::temp_dir().join(format!("horizon-lists-cesu-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("ops.json");
+        for (bytes, expected) in [
+            (&b"\xED\xA0\x80"[..], "\u{fffd}"),
+            (&b"\xED\xA0"[..], "\u{fffd}"),
+            (&b"\xED\xBFA"[..], "\u{fffd}A"),
+            (&b"Caf\xE9"[..], "Caf\u{fffd}"),
+        ] {
+            std::fs::write(&file, bytes).unwrap();
+            assert_eq!(read_utf8(&file).unwrap(), expected, "{bytes:x?}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
