@@ -3380,12 +3380,9 @@ impl Mob {
         armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
         player_uuid: Option<[i32; 4]>,
     ) -> bool {
-        // Enderman.hurtServer: past `isInvulnerableTo`, the teleport draw
-        // follows `super.hurtServer` whatever it answered (a hurt cooldown, a
-        // dead enderman), its hurt sound's pitch included.
-        let enderman = self.species() == Species::Enderman
-            && !self.removed
-            && !(self.is_invulnerable() && !source.kind.bypasses_invulnerability());
+        // `Guardian.hurtServer`'s spikes answer its attacker before
+        // `super.hurtServer`'s guards; the enderman's teleport waits for after.
+        let enderman = hurt_by::before_hurt(self, &source);
         let hurt = self.hurt_server(amount, source, armor_effectiveness, player_uuid);
         if enderman {
             enderman::after_hurt(self, &source);
@@ -6537,3 +6534,5 @@ mod hidden_speed_mob_tick_tests {
         );
     }
 }
+#[cfg(test)]
+mod guardian_tests;
