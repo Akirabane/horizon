@@ -95,22 +95,33 @@ fn add_dir(zip: &mut ZipWriter<BufWriter<File>>, dir: &Path, prefix: &str) -> Re
 }
 
 /// Zips the world and the settings into `backups/<file_name>`. The zip is written under a temporary name
-/// and renamed when complete, so a backup that looks finished is one.
+/// and renamed when complete, so a backup that looks finished is one. Existing finished or partial
+/// backups with this name are left intact.
 pub fn create(dir: &Path, config: &Config, file_name: &str) -> Result<PathBuf, String> {
     let backups = dir.join(DIR);
     std::fs::create_dir_all(&backups).map_err(|e| format!("{}: {e}", backups.display()))?;
     let path = backups.join(file_name);
     let part = backups.join(format!("{file_name}.part"));
+    // Owner only: a backup holds server.toml and server.properties, with the API token, the
+    // RCON password and the management secret. Reserve a new partial before entering its cleanup path.
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let file = options
+        .open(&part)
+        .map_err(|e| format!("{}: {e}", part.display()))?;
     let result = (|| {
-        // Owner only: a backup holds server.toml and server.properties, with the API token, the
-        // RCON password and the management secret.
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let file = options
-            .open(&part)
-            .map_err(|e| format!("{}: {e}", part.display()))?;
+        // Holding the partial's name also excludes another creator while checking the finished ZIP.
+        if path
+            .try_exists()
+            .map_err(|e| format!("{}: {e}", path.display()))?
+        {
+            return Err(format!(
+                "{} exists already; try another name or try again in a second",
+                path.display()
+            ));
+        }
         let mut zip = ZipWriter::new(BufWriter::new(file));
         let world = dir.join(&config.world.name);
         if world.is_dir() {
@@ -473,6 +484,43 @@ mod tests {
         let mode = std::fs::metadata(path).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "{mode:o}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_backup_collision_preserves_finished_and_partial_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-server-backup-collision-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let config = Config::default();
+        let world = dir.join("world");
+        std::fs::create_dir(&world).unwrap();
+        std::fs::write(world.join("level.dat"), b"before").unwrap();
+        let t = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let name = file_name(t, Some("collision")).unwrap();
+        let path = create(&dir, &config, &name).unwrap();
+        let original = std::fs::read(&path).unwrap();
+
+        std::fs::write(world.join("level.dat"), b"after").unwrap();
+        assert!(create(&dir, &config, &name).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!dir.join(DIR).join(format!("{name}.part")).exists());
+        let mut zip = ZipArchive::new(File::open(&path).unwrap()).unwrap();
+        let mut restored = Vec::new();
+        std::io::Read::read_to_end(&mut zip.by_name("world/level.dat").unwrap(), &mut restored)
+            .unwrap();
+        assert_eq!(restored, b"before");
+        drop(zip);
+
+        let pending = file_name(t, Some("pending")).unwrap();
+        let part = dir.join(DIR).join(format!("{pending}.part"));
+        std::fs::write(&part, b"another backup in progress").unwrap();
+        assert!(create(&dir, &config, &pending).is_err());
+        assert_eq!(std::fs::read(&part).unwrap(), b"another backup in progress");
+        assert!(!dir.join(DIR).join(&pending).exists());
+        assert_eq!(std::fs::read(world.join("level.dat")).unwrap(), b"after");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
