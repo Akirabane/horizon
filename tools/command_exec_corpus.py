@@ -521,6 +521,16 @@ def player_state():
         cmd('/attribute @s minecraft:max_health base reset'),
         cmd('/spawnpoint @s 8 230 8'),
         cmd('/setworldspawn 8 230 8'),
+        # Vanilla only checks the spawnable bounds, not a loaded chunk.
+        cmd('/setworldspawn 29999999 64 -30000000'),
+        cmd('/setworldspawn 30000000 64 0'),
+        cmd('/setworldspawn 0 64 -30000001'),
+        cmd('/setworldspawn 0 -20000000 0'),
+        cmd('/setworldspawn 0 20000000 0'),
+        cmd('/spawnpoint @s 30000000 64 0'),
+        cmd('/spawnpoint @s 29999999 64 29999999'),
+        cmd('/setworldspawn 8 230 8'),
+        cmd('/spawnpoint @s 8 230 8'),
         cmd('/tp @s 8.5 230 8.5'),
         cmd('/tp @s ~1 ~ ~'),
         cmd('/teleport @s 8.5 230 8.5 90 0'),
@@ -5394,6 +5404,48 @@ def numeric_array_edits(include_storage_side_effects=False):
     return ops
 
 
+def cube_split():
+    """#8037: `AbstractCubeMob.remove` splits a dead slime or magma cube bigger than size 1 when its body goes, 20
+    ticks after its death. The count (`getSplitCount`, `2 + random.nextInt(3)`) and each child's yaw
+    (`setUpSplitCube`: `random.nextFloat() * 360`) come from the parent's own random, and each child sits at
+    `(i % 2 - 0.5) * width / 2`, `(i / 2 - 0.5) * width / 2` (a cube's width is `0.52 * size`). The third cube
+    falls while it dies and lands on the tick its body goes, when the landing's splash and squish draw from the same
+    random."""
+    x0, y0, z0 = 4096 - 384, 260, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
+            'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False),
+           {'op': 'sync_randoms', 'uniquifier': 8037, 'entity_id': 8_037_000, 'level_seed': 8037}]
+    # Kind, Size tag, x, z, height above the floor. A dying body falls (not with NoAI): from 11.4 it has moved 10.81
+    # blocks after 19 ticks and 12.0 after 20, so it lands on the tick its body goes.
+    cubes = [('slime', 3, x0 + 4.5, z0 + 4.5, 0), ('magma_cube', 1, x0 + 11.5, z0 + 11.5, 0),
+             ('slime', 1, x0 + 4.5, z0 + 11.5, 11.4)]
+    for kind, tag, x, z, up in cubes:
+        # Persistent: no player is within 128 blocks, where a monster despawns at once (Mob.checkDespawn).
+        flags = 'PersistenceRequired:1b' + ('' if up else ',NoAI:1b')
+        ops.append(cmd(f'/summon minecraft:{kind} {x} {y0 + up} {z} {{Size:{tag},{flags}}}', expect_result=1))
+    for kind, _, x, z, up in cubes:
+        # A blow, not /kill: a /kill'ed mob starts dying a tick early in Horizon (#15443).
+        ops.append(cmd(f'/damage @e[type={kind},x={x},y={y0 + up},z={z},distance=..1,limit=1] 1000 minecraft:generic',
+                       expect_result=1))
+    # LivingEntity.tickDeath removes the body on the 20th tick after the death, and the split comes with it:
+    # the dying bodies are still there after 19.
+    for n in (19, 1):
+        ops.append({'op': 'tick', 'n': n})
+        ops.append(cmd(f'/execute if entity @e[x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]'))
+    for kind, _, x, z, _ in cubes:
+        ops.append(cmd(f'/execute if entity @e[type={kind},x={x},y={y0},z={z},distance=..3]'))
+        # One reference point per quadrant, so no two children tie on distance.
+        for sx, sz in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+            child = f'@e[type={kind},x={x + sx},y={y0},z={z + sz * 0.9},distance=..4,sort=nearest,limit=1]'
+            for key in ('Pos[0]', 'Pos[1]', 'Pos[2]', 'Rotation[0]', 'Size'):
+                ops.append(cmd(f'/data get entity {child} {key}'))
+    area = f'x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16'
+    return ops + setup(*[SHRINK_SULFUR_CUBES.format(f'@e[type={kind},{area}]') for kind in ('slime', 'magma_cube')],
+                       f'/kill @e[type=!player,{area}]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 4} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
 
 def sulfur_cube_fuse_ticks(immediate_power=False):
     """SulfurCube.tickFuse runs with NoAI; customServerAiStep timers do not (#9018)."""
@@ -7824,46 +7876,35 @@ def comparator_setblock_output():
     return ops + setup('/tick unfreeze', f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
 
-def cube_split():
-    """#8037: `AbstractCubeMob.remove` splits a dead slime or magma cube bigger than size 1 when its body goes, 20
-    ticks after its death. The count (`getSplitCount`, `2 + random.nextInt(3)`) and each child's yaw
-    (`setUpSplitCube`: `random.nextFloat() * 360`) come from the parent's own random, and each child sits at
-    `(i % 2 - 0.5) * width / 2`, `(i / 2 - 0.5) * width / 2` (a cube's width is `0.52 * size`). The third cube
-    falls while it dies and lands on the tick its body goes, when the landing's splash and squish draw from the same
-    random."""
+def explosion_player_experience():
+    """#11330: `Block.onExplosionHit` passes `dropExperience` = the blast's indirect source is a player (a primed
+    TNT's `owner`) to `spawnAfterBreak`, so blasted sculk pops its constant experience (catalyst 5, sculk 1) only
+    for a player's TNT, not for one whose `owner` is a zombie's UUID. Orbs may merge, so only whether any came
+    out is compared."""
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
     x0, y0, z0 = 4096 - 384, 260, 3584
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
             'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
-           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False),
-           {'op': 'sync_randoms', 'uniquifier': 8037, 'entity_id': 8_037_000, 'level_seed': 8037}]
-    # Kind, Size tag, x, z, height above the floor. A dying body falls (not with NoAI): from 11.4 it has moved 10.81
-    # blocks after 19 ticks and 12.0 after 20, so it lands on the tick its body goes.
-    cubes = [('slime', 3, x0 + 4.5, z0 + 4.5, 0), ('magma_cube', 1, x0 + 11.5, z0 + 11.5, 0),
-             ('slime', 1, x0 + 4.5, z0 + 11.5, 11.4)]
-    for kind, tag, x, z, up in cubes:
-        # Persistent: no player is within 128 blocks, where a monster despawns at once (Mob.checkDespawn).
-        flags = 'PersistenceRequired:1b' + ('' if up else ',NoAI:1b')
-        ops.append(cmd(f'/summon minecraft:{kind} {x} {y0 + up} {z} {{Size:{tag},{flags}}}', expect_result=1))
-    for kind, _, x, z, up in cubes:
-        # A blow, not /kill: a /kill'ed mob starts dying a tick early in Horizon (#15443).
-        ops.append(cmd(f'/damage @e[type={kind},x={x},y={y0 + up},z={z},distance=..1,limit=1] 1000 minecraft:generic',
-                       expect_result=1))
-    # LivingEntity.tickDeath removes the body on the 20th tick after the death, and the split comes with it:
-    # the dying bodies are still there after 19.
-    for n in (19, 1):
-        ops.append({'op': 'tick', 'n': n})
-        ops.append(cmd(f'/execute if entity @e[x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]'))
-    for kind, _, x, z, _ in cubes:
-        ops.append(cmd(f'/execute if entity @e[type={kind},x={x},y={y0},z={z},distance=..3]'))
-        # One reference point per quadrant, so no two children tie on distance.
-        for sx, sz in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
-            child = f'@e[type={kind},x={x + sx},y={y0},z={z + sz * 0.9},distance=..4,sort=nearest,limit=1]'
-            for key in ('Pos[0]', 'Pos[1]', 'Pos[2]', 'Rotation[0]', 'Size'):
-                ops.append(cmd(f'/data get entity {child} {key}'))
-    area = f'x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16'
-    return ops + setup(*[SHRINK_SULFUR_CUBES.format(f'@e[type={kind},{area}]') for kind in ('slime', 'magma_cube')],
-                       f'/kill @e[type=!player,{area}]',
-                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 4} {z0 + 15} air',
+           cmd('/tick freeze', False)]
+    near = f'x={x0},y={y0 - 4},z={z0},dx=16,dy=16,dz=16'
+    for owner in (None, '@p', 'zombie'):
+        ops += [cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air', False),
+                cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} bedrock', False),
+                cmd(f'/setblock {x0 + 8} {y0} {z0 + 8} sculk_catalyst', expect_result=1),
+                cmd(f'/setblock {x0 + 7} {y0} {z0 + 8} sculk', expect_result=1),
+                cmd(f'/summon tnt {x0 + 8}.5 {y0 + 1} {z0 + 8}.5 {{fuse:1,Tags:["xp_tnt"]}}', expect_result=1)]
+        if owner == 'zombie':
+            ops.append(cmd(f'/summon zombie {x0 + 1}.5 {y0} {z0 + 1}.5 '
+                           f'{{NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:["xp_owner"]}}',
+                           expect_result=1))
+            owner = f'@e[type=zombie,tag=xp_owner,{near},limit=1]'
+        if owner:
+            ops.append(cmd(f'/data modify entity @e[type=tnt,tag=xp_tnt,limit=1] owner set from entity {owner} UUID'))
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 2}, cmd('/tick freeze', False),
+                cmd(f'/execute if block {x0 + 8} {y0} {z0 + 8} air', expect_result=1),
+                cmd(f'/execute if entity @e[type=experience_orb,{near}]', comparison='positive_result'),
+                cmd(f'/kill @e[type=!player,{near}]', False), cmd(f'/kill @e[type=item,{near}]', False)]
+    return ops + setup('/tick unfreeze', f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
 
 
@@ -8064,6 +8105,7 @@ def groups():
         ('primed tnt fall', primed_tnt_fall()),
         ('dispensed item escape', dispensed_item_escape()),
         ('command block last output', command_block_last_output()),
+        ('explosion player experience', explosion_player_experience()),
         ('comparator setblock output', comparator_setblock_output()),
         ('cube split', cube_split()),
         ('glide fall accumulation', glide_fall_accumulation()),
