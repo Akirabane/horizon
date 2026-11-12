@@ -877,7 +877,7 @@ pub(super) fn read_saved_start(
     if !matches!(tag.get("id"), Some(Tag::String(id)) if id.to_string_lossy() == def.name) {
         return None;
     }
-    let int = |key| super::structure::saved_templates::int(tag, key);
+    let int = |key| super::structure::saved_legacy::int(tag, key);
     if ChunkPos::new(int("ChunkX"), int("ChunkZ")) != chunk {
         return None;
     }
@@ -905,7 +905,8 @@ pub(super) fn read_saved_start(
         .iter()
         .map(|piece| {
             // `PiecesContainer.load`'s RENAMES read the old jigsaw ids as `jigsaw`; the other
-            // supported types are template pieces.
+            // supported types are template pieces and the mineshaft, fortress and stronghold
+            // pieces that read their own tags.
             if saved_piece_id(piece).is_none() {
                 let Tag::String(id) = piece.get("id")? else {
                     return None;
@@ -913,6 +914,7 @@ pub(super) fn read_saved_start(
                 let id = id.to_string_lossy();
                 let id = id.strip_prefix("minecraft:").unwrap_or(&id);
                 return super::structure::saved_templates::read(id, piece, resources, bindings)
+                    .or_else(|| super::structure::saved_legacy::read(id, piece, def))
                     .map(Piece::Legacy);
             }
             // Pool pieces have no orientation and depth 0. Preserve other values by falling
@@ -1097,7 +1099,7 @@ mod tests {
             assert_eq!(read(&legacy).unwrap().save(), Some(tag.clone()));
         }
         for (key, value) in [
-            ("id", Tag::String("minecraft:msroom".into())),
+            ("id", Tag::String("minecraft:tejp".into())),
             ("rotation", Tag::String("broken".into())),
             ("O", Tag::Int(2)),
             ("GD", Tag::Int(1)),

@@ -130,7 +130,7 @@ fn room_box(direction: Direction, index: i32, w: i32, h: i32, d: i32) -> Boundin
 /// `StructurePiece.createTag` writes as `Direction.get2DDataValue` or -1 for none:
 /// `Direction.from2DDataValue` wraps other values (`Mth.abs(data % 4)`).
 fn saved_orientation(tag: &crate::nbt::Tag) -> Option<Direction> {
-    let data = super::saved_templates::int(tag, "O");
+    let data = super::saved_legacy::int(tag, "O");
     (data != -1).then(|| {
         [
             Direction::South,
