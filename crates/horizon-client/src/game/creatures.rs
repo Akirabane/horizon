@@ -3,6 +3,8 @@
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
 mod bred_draws;
+mod effect_instance;
+use effect_instance::mob_effect_instance;
 mod mob_geometry;
 mod mob_group;
 mod mob_islands;
@@ -1078,7 +1080,7 @@ impl Game<'_> {
             max_entity_cramming: self.ui.rules.int("max_entity_cramming"),
             dimension_type: self.dimension_type(),
             world_seed: self.level.seed,
-            sea_level: if self.dim == Dim::Nether { 32 } else { 63 },
+            sea_level: horizon_world::level::sea_level_of(self.level_key()),
             teams: std::sync::Arc::new(self.mob_teams()),
             items: Some(self.items()),
             lid_openers: &self.lid_openers,
@@ -1174,7 +1176,7 @@ impl Game<'_> {
         self.combat.exploded.clear();
         self.combat.exploded_kinds.clear();
         // EntityTickEvent.Pre for the mobs about to tick, before the loop holds them.
-        let mut round = self.native_tick_round();
+        let mut round = self.native_mob_round();
         if round.listening() {
             let ticking = self.entity_ticking_area();
             let mut i = 0;
@@ -1278,10 +1280,10 @@ impl Game<'_> {
                     .is_some()
                     .then_some(self.level.player_uuid)
                     .flatten(),
-                mods: round.listening() || !horizon_client::mod_api::mods().is_empty(),
+                mods: !round.mobs_quiet(),
                 ticking: &|| Box::new(self.entity_ticking_area()),
             };
-            let mut group = match islands.plan(&mobs, &snapshot, &turns) {
+            let mut group = match islands.plan(&mobs, &snapshot, &turns, &start) {
                 Some(plan) => islands.run(plan, mobs.into(), snapshot, start, &mut turns, &shared),
                 None => {
                     let mut group = mob_group::Group::new(mobs.into(), snapshot, start);
@@ -1874,10 +1876,9 @@ impl Game<'_> {
         for item in stacks {
             // Every death drop is its own ItemEntity, and the drop entity's
             // own random (not the level's) gives it the constructor's
-            // horizontal push (its motion otherwise stays [0, 0.2, 0] and
-            // the drops land stacked at the mob's centre, without disturbing
-            // the level random that the orbs' merge ids and block ticks read
-            // next).
+            // horizontal push (its motion otherwise stays [0, 0.2, 0] and the
+            // drops land stacked at the mob's centre, without disturbing the
+            // level random that the orbs' merge ids and block ticks read next).
             self.spawn_item_own(item, pos, 10);
         }
         // LivingEntity.dropExperience: a mod may change the mob's experience
@@ -1917,8 +1918,9 @@ impl Game<'_> {
                         self.spawn_item_own(item, pos, 10);
                     }
                 }
+                drops::Drop::Aged(s, age) => self.spawn_item_aged(from_loot(&s), pos, age),
                 drops::Drop::Orb(value) if !consumed => self.spawn_orbs(pos, value as u32),
-                drops::Drop::Item(_) | drops::Drop::Stack(_) | drops::Drop::Orb(_) => {}
+                _ => {}
             }
         }
     }
@@ -2308,10 +2310,9 @@ impl Game<'_> {
                     self.post_game_event(event, at, ctx);
                 }
                 // A mob's own `gameEvent(..)` calls: Armadillo.rollUp/rollOut's
-                // ENTITY_ACTION, Creeper.tick's PRIME_FUSE, Mob.ate's EAT, the
-                // shulker's lid (Shulker.setRawPeekAmount), an evoker's vexes
-                // (ENTITY_PLACE), Enderman.teleport's TELEPORT,
-                // LivingEntity.onEquipItem's EQUIP/UNEQUIP.
+                // ENTITY_ACTION, Creeper.tick's PRIME_FUSE, Mob.ate's EAT, a fox's
+                // DRINK, the shulker's lid, an evoker's vexes (ENTITY_PLACE),
+                // Enderman.teleport's TELEPORT, onEquipItem's EQUIP/UNEQUIP.
                 MobEvent::GameEvent {
                     event, at, source, ..
                 } if matches!(
@@ -2319,6 +2320,7 @@ impl Game<'_> {
                     "minecraft:entity_action"
                         | "minecraft:prime_fuse"
                         | "minecraft:eat"
+                        | "minecraft:drink"
                         | "minecraft:container_open"
                         | "minecraft:container_close"
                         | "minecraft:entity_place"
@@ -2530,6 +2532,13 @@ impl Game<'_> {
                     });
                     self.combat.explosion_source = source_mob;
                     self.combat.explosion_source_named = noted;
+                    let portal_proof = species == Species::SulfurCube
+                        && source_mob.is_some_and(|id| {
+                            self.portals
+                                .entities
+                                .get(&id)
+                                .is_some_and(|p| p.cooldown > 0)
+                        });
                     self.combat.explosion_cause = match species {
                         Species::Creeper => Some("minecraft:creeper"),
                         Species::Wither => Some("minecraft:wither"),
@@ -2559,7 +2568,11 @@ impl Game<'_> {
                         Species::Creeper | Species::Wither => {
                             self.with_hive_emptying_blast(|g| g.explode(at, radius, source))
                         }
-                        Species::SulfurCube => self.explode_sulfur_cube(at, radius, source),
+                        Species::SulfurCube => self.explode_sulfur_cube(
+                            at,
+                            radius,
+                            source.with_portal_proof(portal_proof),
+                        ),
                         _ => self.explode(at, radius, source),
                     };
                     self.combat.explosion_source = None;
@@ -3219,11 +3232,7 @@ impl Game<'_> {
                 MobEvent::DolphinTreasure { mob } => {
                     // ServerLevel.findNearestMapStructure(#dolphin_located, 50).
                     let Some(at) = self.mobs.iter().find(|m| m.id == mob).map(|m| {
-                        [
-                            m.position.x.floor() as i32,
-                            m.position.y.floor() as i32,
-                            m.position.z.floor() as i32,
-                        ]
+                        [m.position.x, m.position.y, m.position.z].map(|v| v.floor() as i32)
                     }) else {
                         continue;
                     };
@@ -3234,7 +3243,11 @@ impl Game<'_> {
                         .filter(|_| !names.is_empty())
                         .and_then(|t| t.locate(&names, at, 50));
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
-                        m.extra.home = found.map(|(_, p)| p);
+                        m.extra.home = found.as_ref().map(|(_, p)| *p);
+                    }
+                    // DolphinSwimToTreasureGoal.start: entity event 38 once it has a treasure.
+                    if found.is_some() {
+                        self.mob_event_particles(mob, 38);
                     }
                 }
                 MobEvent::EffectPlayer {
@@ -3968,6 +3981,7 @@ impl Game<'_> {
     ) -> bool {
         let post_attack_if_alive = std::mem::take(&mut self.combat.post_attack_if_alive);
         let rocket = std::mem::take(&mut self.combat.rocket_hit);
+        let pierce = std::mem::take(&mut self.combat.piercing_hit);
         let melee = self.combat.melee_mob.take();
         // ServerPlayer.canHarmPlayer refused another player's projectile.
         if self.creative || self.combat.refuse_player_hit {
@@ -3982,7 +3996,7 @@ impl Game<'_> {
                 .damage_tags
                 .get("minecraft:is_projectile")
                 .is_some_and(|t| t.contains(damage_type));
-        let blocking = self.player_blocking(from, damage_type, false);
+        let blocking = self.player_blocking(from, damage_type, pierce);
         let raised = blocking.is_some();
         // Melee: the attacker stands at `from` (another player's hit has no mob behind it).
         let attacker = match known {
@@ -5305,11 +5319,7 @@ impl Game<'_> {
                 }
                 let hurt = match who {
                     Who::Player => {
-                        let hurt = self.mob_hits_player(
-                            amount,
-                            [p.previous.x, p.previous.y, p.previous.z],
-                            "minecraft:arrow",
-                        );
+                        let hurt = self.arrow_hits_player(amount, p);
                         // AbstractArrow.onHitEntity: a hit that hurt leaves a
                         // non-piercing arrow stuck in the body.
                         if hurt && p.arrow.as_ref().is_some_and(|a| a.pierce == 0) {
@@ -5573,7 +5583,7 @@ impl Game<'_> {
                         if let Some(id) = self.spawn_mob_raw("minecraft:chicken", atp, true)
                             && let Some(c) = self.mobs.iter_mut().find(|m| m.id == id)
                         {
-                            c.extra.age = -24000;
+                            (c.extra.age, c.extra.variant) = (-24000, p.egg_variant.unwrap_or(0));
                         }
                     }
                 }
@@ -7136,12 +7146,12 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref() else {
             return Ok(false);
         };
-        // Projectile.shootFromRotation adds getKnownMovement: what the thrower
-        // last moved, not a velocity the server kept for a guest.
+        // Projectile.shootFromRotation adds getKnownMovement: what the thrower last moved.
         let on_ground = p.ground.on_ground;
         let velocity = self.known_player_movement();
         let start = Vec3::new(eye[0], eye[1] - 0.1, eye[2]);
         let mut proj = Projectile::new(kind.clone(), start, Some(Who::Player));
+        proj.set_egg_item(stack);
         proj.shoot_from_rotation(self.pitch, self.yaw, 0.0, 1.5, 1.0, velocity, on_ground);
         self.add_projectile(proj);
         // SnowballItem.use / EggItem.use / EnderpearlItem.use: awardStat(ITEM_USED).
@@ -7638,24 +7648,6 @@ fn knock_back(
         },
         v.z / 2.0 - zd / l * power,
     );
-}
-
-/// The instance a mob effect gives the player; `None` for a creative or
-/// spectator player (`immune`) unless it is ambient (the nautilus's Breath).
-fn mob_effect_instance(
-    effect: &'static str,
-    ticks: i32,
-    amplifier: i32,
-    ambient: bool,
-    immune: bool,
-) -> Option<horizon_client::effects::EffectInstance> {
-    if immune && !ambient {
-        return None;
-    }
-    let id = effect.strip_prefix("minecraft:").unwrap_or(effect);
-    let mut instance = horizon_client::effects::EffectInstance::new(id, ticks, amplifier);
-    instance.ambient = ambient;
-    Some(instance)
 }
 
 #[cfg(test)]
@@ -9057,6 +9049,7 @@ mod h169_glide_travel_tests {
                     .unwrap();
             }
         }
+        game.load_ticking_neighbourhood(0, 0);
         game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
         game.creative = true;
         assert!(game.run_command("fill 0 199 0 31 199 31 stone"));
