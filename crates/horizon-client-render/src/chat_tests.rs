@@ -997,76 +997,6 @@ fn the_chat_search_and_copy_skip_legacy_codes() {
     assert_eq!(chat.lines.len(), 0);
 }
 
-/// A repeat merged by compact chat leaves a reader scrolled up where they were.
-#[test]
-fn a_compact_repeat_keeps_the_scrolled_view_still() {
-    let font = font();
-    let mut chat = Chat::default();
-    chat.qol.compact = true;
-    let says = |chat: &mut Chat, text: &str| {
-        chat.add_message(
-            &font,
-            Text::literal(text),
-            None,
-            ChatSource::Server,
-            0,
-            true,
-        );
-    };
-    for i in 0..60 {
-        says(&mut chat, &format!("line {i}"));
-    }
-    says(&mut chat, "gg");
-    chat.scroll_by(5, true);
-    assert_eq!(chat.scroll, 5);
-    says(&mut chat, "gg");
-    assert_eq!(chat.lines[0].content.plain(), "gg (x2)");
-    assert_eq!(chat.scroll, 5);
-    // A new message still pushes the view up by its line.
-    says(&mut chat, "new");
-    assert_eq!(chat.scroll, 6);
-}
-
-/// `FilterMask.applyWithFormatting`: a pass-through mask keeps the message, a
-/// fully filtered one hides it, and a partial one turns each masked UTF-16 unit
-/// into a dark grey `#` whose hover reads `chat.filtered`.
-#[test]
-fn a_server_filter_mask_hides_or_masks_the_message() {
-    let text = |v: &serde_json::Value| crate::component::to_text(v, &mut |s| Text::literal(s));
-    let shown = |content: &str, mask: (i32, Vec<i64>)| {
-        filtered_message(content, &mask).map(|v| text(&v).plain())
-    };
-    assert_eq!(shown("hello", (0, vec![])), Some("hello".to_owned()));
-    assert_eq!(shown("hello", (1, vec![])), None);
-    assert_eq!(shown("hello", (2, vec![0b0110])), Some("h##lo".to_owned()));
-    assert_eq!(
-        shown("hello", (2, vec![0b1_0001])),
-        Some("#ell#".to_owned())
-    );
-    // An emoji is two UTF-16 units, so two bits and two `#`.
-    assert_eq!(
-        shown("a\u{1F600}b", (2, vec![0b0110])),
-        Some("a##b".to_owned())
-    );
-    // Bit 65 is in the second word.
-    let long = "x".repeat(70);
-    let mut expected = long.clone();
-    expected.replace_range(65..66, "#");
-    assert_eq!(shown(&long, (2, vec![0, 0b10])), Some(expected));
-    let masked = text(&filtered_message("hello", &(2, vec![0b0110])).unwrap());
-    let hash = masked.spans.iter().find(|s| s.text == "##").unwrap();
-    assert_eq!(hash.style.color, Some(text::DARK_GRAY));
-    let hover = hash.style.hover.as_ref().unwrap();
-    assert_eq!(hover.spans[0].text, "chat.filtered");
-    assert!(
-        masked
-            .spans
-            .iter()
-            .filter(|s| s.text != "##")
-            .all(|s| s.style.color.is_none())
-    );
-}
-
 /// `ChatComponent`'s queue row: the pending count, the click that shows the
 /// next held message, and the hover text that says so.
 #[test]
@@ -1139,6 +1069,104 @@ fn a_click_on_the_queue_row_is_the_next_held_message() {
     assert!(at(&chat, -1.0, bottom + 2.0).is_none());
     chat.queue = 0;
     assert!(at(&chat, 0.5, bottom + 2.0).is_none());
+}
+
+/// A repeat merged by compact chat leaves a reader scrolled up where they were.
+#[test]
+fn a_compact_repeat_keeps_the_scrolled_view_still() {
+    let font = font();
+    let mut chat = Chat::default();
+    chat.qol.compact = true;
+    let says = |chat: &mut Chat, text: &str| {
+        chat.add_message(
+            &font,
+            Text::literal(text),
+            None,
+            ChatSource::Server,
+            0,
+            true,
+        );
+    };
+    for i in 0..60 {
+        says(&mut chat, &format!("line {i}"));
+    }
+    says(&mut chat, "gg");
+    chat.scroll_by(5, true);
+    assert_eq!(chat.scroll, 5);
+    says(&mut chat, "gg");
+    assert_eq!(chat.lines[0].content.plain(), "gg (x2)");
+    assert_eq!(chat.scroll, 5);
+    // A new message still pushes the view up by its line.
+    says(&mut chat, "new");
+    assert_eq!(chat.scroll, 6);
+}
+
+/// `FilterMask.applyWithFormatting`: a pass-through mask keeps the message, a
+/// fully filtered one hides it, and a partial one turns each masked UTF-16 unit
+/// into a dark grey `#` whose hover reads `chat.filtered`.
+#[test]
+fn a_server_filter_mask_hides_or_masks_the_message() {
+    let text = |v: &serde_json::Value| crate::component::to_text(v, &mut |s| Text::literal(s));
+    let shown = |content: &str, mask: (i32, Vec<i64>)| {
+        filtered_message(content, &mask).map(|v| text(&v).plain())
+    };
+    assert_eq!(shown("hello", (0, vec![])), Some("hello".to_owned()));
+    assert_eq!(shown("hello", (1, vec![])), None);
+    assert_eq!(shown("hello", (2, vec![0b0110])), Some("h##lo".to_owned()));
+    assert_eq!(
+        shown("hello", (2, vec![0b1_0001])),
+        Some("#ell#".to_owned())
+    );
+    // An emoji is two UTF-16 units, so two bits and two `#`.
+    assert_eq!(
+        shown("a\u{1F600}b", (2, vec![0b0110])),
+        Some("a##b".to_owned())
+    );
+    // Bit 65 is in the second word.
+    let long = "x".repeat(70);
+    let mut expected = long.clone();
+    expected.replace_range(65..66, "#");
+    assert_eq!(shown(&long, (2, vec![0, 0b10])), Some(expected));
+    let masked = text(&filtered_message("hello", &(2, vec![0b0110])).unwrap());
+    let hash = masked.spans.iter().find(|s| s.text == "##").unwrap();
+    assert_eq!(hash.style.color, Some(text::DARK_GRAY));
+    let hover = hash.style.hover.as_ref().unwrap();
+    assert_eq!(hover.spans[0].text, "chat.filtered");
+    assert!(
+        masked
+            .spans
+            .iter()
+            .filter(|s| s.text != "##")
+            .all(|s| s.style.color.is_none())
+    );
+}
+
+/// `ChatComponent.refreshTrimmedMessages`: a filter change lays the lines out
+/// again but keeps `chatScrollbarPos` and `newMessageSinceScroll`; only
+/// `rescaleChat` resets them, after `resetChatScroll`.
+#[test]
+fn a_chat_option_change_keeps_the_readers_place_but_a_rescale_does_not() {
+    let font = font();
+    let mut chat = Chat::default();
+    for i in 0..60 {
+        chat.add_message(
+            &font,
+            Text::literal(format!("line {i}")),
+            None,
+            ChatSource::Server,
+            0,
+            false,
+        );
+    }
+    chat.scroll = 3;
+    chat.new_since_scroll = true;
+    chat.set_abilities(&font, ChatAbilities::new(ChatVisibility::System));
+    assert_eq!(chat.scroll, 3);
+    assert!(chat.new_since_scroll);
+    let atlas = crate::hud::HudAtlas::build(Path::new("/nonexistent/horizon-test-assets")).unwrap();
+    chat.rescale(&atlas);
+    assert_eq!(chat.scroll, 0);
+    assert!(!chat.new_since_scroll);
 }
 
 /// `SuggestionsList.extractRenderState`: the list's rectangle asks for the
