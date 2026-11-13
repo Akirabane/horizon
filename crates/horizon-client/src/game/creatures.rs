@@ -321,12 +321,8 @@ fn target_named(
 /// (with its effect), a sting, a sonic boom.
 fn hits_target(e: &MobEvent, want: Who) -> bool {
     match (e, want) {
-        (
-            MobEvent::AttackPlayer(..)
-            | MobEvent::AttackPlayerWithEffect { .. }
-            | MobEvent::StingPlayer { .. },
-            Who::Player,
-        ) => true,
+        (MobEvent::AttackPlayer(..) | MobEvent::AttackPlayerWithEffect { .. }, Who::Player) => true,
+        (MobEvent::Sting { target, .. }, want) => *target == want,
         (
             MobEvent::AttackMob { target, .. }
             | MobEvent::DamageMob { target, .. }
@@ -2363,21 +2359,15 @@ impl Game<'_> {
                     self.combat.hit_landed =
                         self.mob_hits_player(amount, from, "minecraft:mob_attack");
                 }
-                // doHurtTarget: the effect only when hurtServer took damage.
                 // Bee.doHurtTarget: a sting that hurt leaves the stinger in the
-                // body, then the poison.
-                MobEvent::StingPlayer {
+                // body, then the poison; the bee's own stinger, calm-down and
+                // sound follow only then too.
+                MobEvent::Sting {
+                    target,
                     amount,
-                    from,
                     poison_ticks,
-                } => {
-                    if self.mob_hits_player(amount, from, "minecraft:mob_attack") {
-                        self.combat.stuck.add_stinger();
-                        if poison_ticks > 0 {
-                            self.give_player_effect("minecraft:poison", poison_ticks, 0);
-                        }
-                    }
-                }
+                    source,
+                } => self.sting(target, amount, poison_ticks, source),
                 MobEvent::AttackPlayerWithEffect {
                     amount,
                     from,
