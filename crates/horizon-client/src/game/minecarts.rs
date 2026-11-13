@@ -29,8 +29,10 @@ use horizon_core::{
 use horizon_world::registry::BlockStateId;
 use std::{collections::HashMap, sync::Arc};
 mod cells;
+mod hit;
 mod index;
 mod nbt;
+pub(super) use hit::CartHit;
 pub(super) use index::{CartIndex, cart_at};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -2008,7 +2010,7 @@ impl Game<'_> {
                 return;
             }
             let p = self.carts[i].position;
-            self.hurt_cart(i, 4.0, false, true);
+            self.hurt_cart(i, 4.0, false, true, CartHit::default());
             self.lava_hurt_sound([p.x, p.y, p.z]);
         }
     }
@@ -2427,6 +2429,7 @@ impl Game<'_> {
     }
     /// An arrow hit cart `i` (`MinecartTNT.hurtServer`, then
     /// `VehicleEntity.hurtServer`): a burning arrow sets off a TNT minecart.
+    /// `owner` is `AbstractArrow.getOwner`, the hit's `DamageSource.getEntity`;
     pub(super) fn arrow_hits_cart(
         &mut self,
         i: usize,
@@ -2434,6 +2437,8 @@ impl Game<'_> {
         arrow_velocity: Vec3,
         burning: bool,
         creative: bool,
+        owner: Option<Who>,
+        guest: Option<u32>,
     ) {
         if i >= self.carts.len() {
             return;
@@ -2446,7 +2451,8 @@ impl Game<'_> {
             self.explode_cart(&mut c, arrow_velocity.length_squared());
             return;
         }
-        self.hurt_cart(i, damage, creative, false);
+        let hit = CartHit::projectile(owner, guest);
+        self.hurt_cart(i, damage, creative, false, hit);
     }
     /// `Containers.dropContents(level, entity, container)` at a vehicle's
     /// position `at`: each slot (an empty one too) from a spot in its block,
@@ -2473,13 +2479,6 @@ impl Game<'_> {
             }
         }
     }
-    /// `VehicleEntity.hurtServer`: shake, add the damage, break past 40 (at
-    /// once for creative players); TNT minecarts prime instead when moving
-    /// or hurt by fire or an explosion (`damageSourceIgnitesTnt`).
-    pub(super) fn hurt_cart(&mut self, i: usize, damage: f32, creative: bool, fire: bool) {
-        self.hurt_cart_result(i, damage, creative, fire);
-    }
-
     /// Accepted damage is distinct from survival, destruction, or TNT priming.
     pub(super) fn hurt_cart_result(
         &mut self,
@@ -2487,6 +2486,7 @@ impl Game<'_> {
         mut damage: f32,
         creative: bool,
         fire: bool,
+        hit: CartHit,
     ) -> bool {
         let kind = self.carts[i].kind.id();
         let mut cancel = false;
@@ -2494,6 +2494,8 @@ impl Game<'_> {
         if cancel {
             return false;
         }
+        let p = self.carts[i].position;
+        let at = [p.x, p.y, p.z];
         let destroyed = {
             let c = &mut self.carts[i];
             c.hurt_dir = -c.hurt_dir;
@@ -2503,6 +2505,8 @@ impl Game<'_> {
             // (so ignite) a TNT cart whatever damage it has taken.
             cart_is_destroyed(creative, c.damage, fire && c.kind == CartKind::Tnt)
         };
+        // VehicleEntity.hurtServer: `gameEvent(ENTITY_DAMAGE, source.getEntity())`.
+        self.entity_event_by("minecraft:entity_damage", at, hit.by);
         if destroyed {
             let speed = self.carts[i].velocity.x * self.carts[i].velocity.x
                 + self.carts[i].velocity.z * self.carts[i].velocity.z;
@@ -2516,11 +2520,6 @@ impl Game<'_> {
                 self.release_vehicle_container(id);
             }
             if !tnt_prime {
-                let at = [
-                    self.carts[i].position.x,
-                    self.carts[i].position.y,
-                    self.carts[i].position.z,
-                ];
                 self.native_vehicle_destroy(self.carts[i].kind.id(), at);
             }
             let mut c = self.carts.remove(i);
@@ -2533,7 +2532,6 @@ impl Game<'_> {
                 }
                 self.carts.insert(i, c);
             } else {
-                let at = [c.position.x, c.position.y, c.position.z];
                 // AbstractMinecartContainer.remove: `Containers.dropContents`
                 // for every destroying removal (the kill below, and a creative
                 // hit's discard), with no `entity_drops` gate of its own.
@@ -2546,11 +2544,13 @@ impl Game<'_> {
                 }
                 if !creative && self.ui.rules.bool("entity_drops") {
                     // `spawnAtLocation`: an ItemEntity's own motion.
-                    self.spawn_item_own(ItemStack::new(c.kind.item(), 1), at, 10);
+                    self.spawn_item_own(self.cart_drop(c.kind, c.id), at, 10);
                     // `chestVehicleDestroyed` drops the emptied container
                     // again, which only draws each slot's spot.
                     let empty = vec![None; c.items.len()];
                     self.drop_vehicle_contents(at, &empty);
+                    // ...and angers the piglins that see the player who broke it.
+                    self.cart_destroy_angers(hit, c.kind);
                 }
             }
         }
@@ -3897,7 +3897,7 @@ mod cart_push_tests {
 mod container_drop_tests {
     use super::super::boats::Boat;
     use super::super::native_machines::tests::server_game;
-    use super::{CartKind, Minecart};
+    use super::{CartHit, CartKind, Minecart};
     use horizon_client::items::ItemStack;
     use horizon_core::geometry::Vec3;
     use horizon_core::random::{LegacyRandom, RandomSource};
@@ -3954,7 +3954,7 @@ mod container_drop_tests {
                 assert_eq!(game.hurt_boat_result(0, 100.0, false), Some(true));
                 assert!(game.boats.is_empty());
             } else {
-                assert!(game.hurt_cart_result(0, 100.0, false, false));
+                assert!(game.hurt_cart_result(0, 100.0, false, false, CartHit::default()));
                 assert!(game.carts.is_empty());
             }
             let mut expected = LegacyRandom::new(1234);
