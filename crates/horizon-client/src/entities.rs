@@ -1746,12 +1746,23 @@ impl Experience {
             7 + level * 2
         }
     }
-    /// Returns the first multiple of 5 the player reached, where each level
-    /// gained would play the level-up sound (`Player.giveExperienceLevels`).
+    /// `Player.giveExperiencePoints`, for both signs of the amount: returns the
+    /// first multiple of 5 the player reached, where each level gained would
+    /// play the level-up sound (`Player.giveExperienceLevels`).
     pub fn give(&mut self, points: i32) -> Option<i32> {
         let mut sound_level = None;
         self.progress += points as f32 / Self::needed(self.level) as f32;
-        self.total = self.total.saturating_add(points).max(0);
+        self.total = self.total.saturating_add(points).clamp(0, i32::MAX);
+        while self.progress < 0.0 {
+            let remaining = self.progress * Self::needed(self.level) as f32;
+            if self.level > 0 {
+                self.level -= 1;
+                self.progress = 1.0 + remaining / Self::needed(self.level) as f32;
+            } else {
+                // `giveExperienceLevels(-1)` at level 0 zeroes the total with it.
+                *self = Self::default();
+            }
+        }
         while self.progress >= 1.0 {
             self.progress = (self.progress - 1.0) * Self::needed(self.level) as f32;
             self.level += 1;
