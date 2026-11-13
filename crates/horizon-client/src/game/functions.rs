@@ -44,6 +44,9 @@ pub(super) struct FnState {
     /// Run the `minecraft:load` tag on the next tick.
     load_pending: bool,
     pub schedule: Vec<Scheduled>,
+    /// The world's saved queue has been read once: it is the live
+    /// `TimerQueue` `SavedData`, so a later reload keeps it as it is.
+    schedule_loaded: bool,
     next_seq: u64,
     /// A dedicated server's `function-permission-level`.
     pub permission: Option<u8>,
@@ -221,7 +224,13 @@ impl Game<'_> {
             self.reload_world_tables();
         }
         self.admit_store(store);
-        if self.fns.schedule.is_empty() {
+        // The schedule is the world's live `TimerQueue` `SavedData`, not pack
+        // content: firing an event (`TimerQueue.tick`) and `/schedule clear`
+        // (`TimerQueue.remove`) drop it from the queue, and a reload only
+        // replaces the function library. Read the saved file when the world's
+        // data loads, then keep the queue as it is.
+        if !self.fns.schedule_loaded {
+            self.fns.schedule_loaded = true;
             self.load_schedule();
         }
     }
@@ -2771,3 +2780,5 @@ mod required_tag_tests {
 
 #[cfg(test)]
 include!("functions/typed_state_range_tests.rs");
+#[cfg(test)]
+mod schedule_reload_tests;
