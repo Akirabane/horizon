@@ -96,10 +96,26 @@ fn add_dir(zip: &mut ZipWriter<BufWriter<File>>, dir: &Path, prefix: &str) -> Re
 
 /// Zips the world and the settings into `backups/<file_name>`. The zip is written under a temporary name
 /// and renamed when complete, so a backup that looks finished is one. Existing finished or partial
-/// backups with this name are left intact.
+/// backups with this name are left intact. The output directory must resolve outside the world.
 pub fn create(dir: &Path, config: &Config, file_name: &str) -> Result<PathBuf, String> {
     let backups = dir.join(DIR);
     std::fs::create_dir_all(&backups).map_err(|e| format!("{}: {e}", backups.display()))?;
+    let world = dir.join(&config.world.name);
+    if world.is_dir() {
+        let source = world
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", world.display()))?;
+        let destination = backups
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", backups.display()))?;
+        if destination.starts_with(&source) {
+            return Err(format!(
+                "{} must be outside the world {}",
+                backups.display(),
+                world.display()
+            ));
+        }
+    }
     let path = backups.join(file_name);
     let part = backups.join(format!("{file_name}.part"));
     // Owner only: a backup holds server.toml and server.properties, with the API token, the
@@ -123,7 +139,6 @@ pub fn create(dir: &Path, config: &Config, file_name: &str) -> Result<PathBuf, S
             ));
         }
         let mut zip = ZipWriter::new(BufWriter::new(file));
-        let world = dir.join(&config.world.name);
         if world.is_dir() {
             add_dir(&mut zip, &world, &config.world.name)?;
         }
@@ -521,6 +536,95 @@ mod tests {
         assert!(!dir.join(DIR).join(&pending).exists());
         assert_eq!(std::fs::read(world.join("level.dat")).unwrap(), b"after");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_output_cannot_alias_the_world() {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-server-backup-alias-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let config = Config::default();
+        let name = "2026-11-13_00-00-00-layout.zip";
+        let mut accepted_overlaps = Vec::new();
+        for (label, world_target, backup_target, succeeds) in [
+            ("world-is-backups", Some("backups"), None, false),
+            ("backups-in-world", None, Some("world/archives"), false),
+            ("same-target", Some("store"), Some("store"), false),
+            ("world-disjoint", Some("world-data"), None, true),
+            ("backups-disjoint", None, Some("archive-data"), true),
+            (
+                "both-disjoint",
+                Some("store/world"),
+                Some("store/world-archives"),
+                true,
+            ),
+        ] {
+            let dir = root.join(label);
+            std::fs::create_dir(&dir).unwrap();
+            let world = dir.join("world");
+            if let Some(target) = world_target {
+                std::fs::create_dir_all(dir.join(target)).unwrap();
+                std::os::unix::fs::symlink(target, &world).unwrap();
+            } else {
+                std::fs::create_dir(&world).unwrap();
+            }
+            let backups = dir.join(DIR);
+            if let Some(target) = backup_target {
+                std::fs::create_dir_all(dir.join(target)).unwrap();
+                std::os::unix::fs::symlink(target, &backups).unwrap();
+            }
+            std::fs::create_dir(world.join("region")).unwrap();
+            std::fs::write(world.join("level.dat"), b"synthetic world").unwrap();
+            std::fs::write(world.join("region/r.0.0.mca"), b"synthetic region").unwrap();
+            std::fs::write(dir.join("server.toml"), b"synthetic settings").unwrap();
+
+            match create(&dir, &config, name) {
+                Ok(path) if succeeds => {
+                    let mut zip = ZipArchive::new(File::open(path).unwrap()).unwrap();
+                    let mut entries: Vec<_> = zip
+                        .file_names()
+                        .map(|name| name.unwrap().into_owned())
+                        .collect();
+                    entries.sort();
+                    assert_eq!(
+                        entries,
+                        ["server.toml", "world/level.dat", "world/region/r.0.0.mca"],
+                        "{label}"
+                    );
+                    let mut bytes = Vec::new();
+                    std::io::Read::read_to_end(
+                        &mut zip.by_name("world/level.dat").unwrap(),
+                        &mut bytes,
+                    )
+                    .unwrap();
+                    assert_eq!(bytes, b"synthetic world", "{label}");
+                }
+                Ok(_) => accepted_overlaps.push(label),
+                Err(error) => {
+                    assert!(!succeeds, "{label}: {error}");
+                    assert!(!backups.join(name).exists(), "{label}");
+                }
+            }
+            assert!(!backups.join(format!("{name}.part")).exists(), "{label}");
+            assert_eq!(
+                std::fs::read(world.join("level.dat")).unwrap(),
+                b"synthetic world",
+                "{label}"
+            );
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(
+            accepted_overlaps.is_empty(),
+            "backup accepted overlapping paths: {accepted_overlaps:?}"
+        );
     }
 
     #[test]
