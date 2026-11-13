@@ -4064,7 +4064,7 @@ impl Game<'_> {
             && self.world.loaded(c.pos[0], c.pos[2])
         {
             let found = self
-                .as_guest(host, conn, |g| g.resolve_server_respawn(c))
+                .as_guest(host, conn, |g| g.resolve_server_respawn(c, true))
                 .flatten();
             let world = self
                 .level
