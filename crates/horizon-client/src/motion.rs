@@ -2483,16 +2483,7 @@ impl EntityMoveWorld for MotionWorld<'_, '_, '_> {
         emission::apply_movement_emission(self, kind, movement, position, state)
     }
     fn block_speed_factor(&mut self) -> Result<f32> {
-        let efficiency = self.player.attribute("minecraft:movement_efficiency")? as f32;
-        let location = self.location();
-        let block = movement_support::block_speed_factor(
-            &mut RegistryMovementWorld {
-                properties: &self.resources.blocks,
-                world: self,
-            },
-            location,
-        )?;
-        Ok(block + efficiency * (1.0 - block))
+        self.player_block_speed_factor()
     }
 }
 // The player's footsteps and swim sounds. Flapping and the step game event
