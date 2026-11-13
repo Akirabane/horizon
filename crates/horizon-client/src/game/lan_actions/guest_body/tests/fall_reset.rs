@@ -150,4 +150,25 @@ fn a_guest_move_that_goes_up_ends_its_fall() {
         fall(&g),
         (1.0, Some([12.5, 103.5, 12.5]), [true, false, false])
     );
+
+    // A player that dies later in the tick was alive at its move up, so the fall still counts:
+    // half a heart left, and a block at its head to suffocate in once it has moved.
+    assert!(g.run_command(&format!("advancement revoke {NAME} only fall:any")));
+    assert!(g.run_command("gamerule natural_health_regeneration false"));
+    let health = g.lan.as_ref().unwrap().hub.guests[0].health;
+    assert!(g.run_command(&format!("damage {NAME} {} minecraft:generic", health - 0.5)));
+    // The damage clock runs out, so the next damage counts.
+    for _ in 0..20 {
+        g.tick_lan(false);
+    }
+    assert!(g.run_command("setblock 12 105 12 minecraft:stone"));
+    tick_with_moves(&mut g, &[104.0]);
+    let guest = &g.lan.as_ref().unwrap().hub.guests[0];
+    assert!(
+        guest.health <= 0.0,
+        "the guest suffocated: {}",
+        guest.health
+    );
+    // Half a block up from where the last fall began: any fall, and a short one.
+    assert_eq!(fall(&g).2, [true, true, false]);
 }

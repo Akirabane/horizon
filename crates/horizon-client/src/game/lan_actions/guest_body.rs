@@ -173,7 +173,8 @@ impl Game<'_> {
             // cobweb or a sweet berry bush it moves through has already made it
             // forget the fall (`makeStuckInBlock`), so landing in one is safe.
             let _ = w.server_stuck_in_blocks(start);
-            // Where the first move that went up ended, if one did.
+            // Where the first move that went up ended, if one did, and whether the player
+            // was alive then: the hazards below may kill it later in this tick.
             let mut rose = None;
             let mut at = start;
             for (moved, on_ground) in moves {
@@ -188,7 +189,7 @@ impl Game<'_> {
                     // (`resetFallDistance`), after that move's own fall check.
                     if moved[1] > 0.0 {
                         w.player.fall_distance = 0.0;
-                        rose.get_or_insert(at);
+                        rose.get_or_insert((at, !w.player.health.dead_or_dying()));
                     }
                     w.check_movement_statistics(movement)
                 })();
@@ -232,8 +233,8 @@ impl Game<'_> {
                 w.server_player_pose_tick()
             };
             let mut events = std::mem::take(&mut w.player.events);
-            if let Some(at) = rose {
-                game.end_tracked_fall(at);
+            if let Some((at, alive)) = rose {
+                game.end_tracked_fall(at, alive);
             }
             // Powder snow and cauldrons put the fire out along those moves.
             game.block_extinguish_player(&events);
@@ -451,17 +452,18 @@ impl Game<'_> {
 impl Game<'_> {
     /// `ServerPlayer.resetFallDistance` for a move that went up: the tracked fall ends, and
     /// `fall_from_height` measures it from where it began to `at`, where that move ended. A
-    /// later move of the same tick may have taken the player further.
-    fn end_tracked_fall(&mut self, at: Vec3) {
+    /// later move of the same tick may have taken the player further. `alive` is the player's
+    /// state at that move (`getHealth() > 0`): a death later in the tick does not undo it.
+    fn end_tracked_fall(&mut self, at: Vec3, alive: bool) {
         let Some(start) = self.adv.marks.fall.take() else {
             return;
         };
+        if !alive {
+            return;
+        }
         let Some(player) = self.player.as_mut() else {
             return;
         };
-        if player.health.dead_or_dying() {
-            return;
-        }
         let end = std::mem::replace(&mut player.position, at);
         self.trigger_distance("minecraft:fall_from_height", start);
         if let Some(player) = self.player.as_mut() {
