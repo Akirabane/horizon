@@ -1186,22 +1186,24 @@ impl Game<'_> {
                         )))
                     }
                     _ => {
-                        let Some(handle) = player.attributes.get_instance(Some(key)).ok().flatten()
-                        else {
-                            return Err(no_attribute(&name, &description));
-                        };
-                        let found = player
+                        // getAttributeModifier: getEntityWithAttribute checks
+                        // hasAttribute, then hasModifier and getModifierValue read
+                        // the cached instance or the type's supplier. None of
+                        // them calls getInstance, so a failed lookup leaves the
+                        // attribute map (and the `attributes` list a save packs)
+                        // untouched.
+                        if !player
                             .attributes
-                            .edit(&handle, |value, _| {
-                                Ok(value
-                                    .modifiers()
-                                    .iter()
-                                    .find(|m| m.id() == modifier_id)
-                                    .map(|m| m.amount()))
-                            })
+                            .has_attribute(Some(key.clone()))
+                            .map_err(unavailable)?
+                        {
+                            return Err(no_attribute(&name, &description));
+                        }
+                        let Some(v) = player
+                            .attributes
+                            .modifier_value(Some(key), &modifier_id)
                             .ok()
-                            .flatten();
-                        let Some(v) = found else {
+                        else {
                             return Err(text_error(
                                 "commands.attribute.failed.no_modifier",
                                 &[
@@ -2815,3 +2817,7 @@ mod vehicle_damage_command_tests {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "attribute_tests.rs"]
+mod attribute_tests;
