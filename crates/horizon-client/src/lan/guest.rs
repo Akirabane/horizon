@@ -775,7 +775,7 @@ impl Guest {
             .filter(|_| !self.watching)
             .unwrap_or_else(|| self.chunk())
     }
-    /// A camera change or a teleport's ack: the tickets follow `position`.
+    /// A camera change or a passenger's move: the tickets follow `position`.
     pub fn release_tickets(&mut self) {
         self.held_ticket_chunk = None;
     }
