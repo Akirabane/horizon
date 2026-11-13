@@ -14,6 +14,7 @@
 //! Worlds saved by older Horizon builds (`region/`, `DIM-1/`, `Player` in
 //! `level.dat`) are migrated on open.
 mod backpressure;
+mod block_entity_order;
 mod respawn;
 
 use crate::{
@@ -33,7 +34,7 @@ use horizon_world::attachments::{ATTACHMENTS_KEY, attachment_compound};
 use horizon_world::worldgen::blending::BlendingData;
 use horizon_world::{
     DATA_VERSION,
-    chunk::BlockState,
+    chunk::{BlockState, block_entity_pos},
     chunk_status::ChunkStatus,
     compression::Compression,
     heightmap::{Heightmap, HeightmapChunk, HeightmapState, HeightmapType},
@@ -748,7 +749,7 @@ pub fn encode_block_entity(
                         .collect(),
                 ),
             ));
-            entries.push(("triggered", Tag::Int(i32::from(c.triggered))));
+            entries.push(("triggered", Tag::Int(c.triggered)));
             entries.push(("crafting_ticks_remaining", Tag::Int(c.crafting_ticks)));
         }
         BlockEntity::Banner(b) => {
@@ -940,7 +941,7 @@ fn decode_mod_block_entity(id: String, tag: &Tag) -> Option<crate::containers::M
 }
 pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::containers::BlockEntity)> {
     use crate::containers::BlockEntity;
-    let int = |k: &str| number(tag.get(k)).map(|v| v as i32);
+    let int = |k: &str| tag.get(k).and_then(crate::nbt_path::int_value); // getIntOr
     let id = text(tag.get("id"))?;
     let pos = (int("x")?, int("y")?, int("z")?);
     if id.contains(':') && !id.starts_with("minecraft:") {
@@ -1123,7 +1124,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
                     }
                 }
             }
-            c.triggered = int("triggered").unwrap_or(0) != 0;
+            c.triggered = int("triggered").unwrap_or(0);
             c.state_triggered = None;
             c.crafting_ticks = int("crafting_ticks_remaining").unwrap_or(0);
         }
@@ -1847,11 +1848,10 @@ fn decode_column(
     };
     if let Some(Tag::List(entities)) = tag.get("block_entities") {
         for e in entities {
-            let int = |k: &str| number(e.get(k)).map(|v| v as i32);
-            if let (Some(x), Some(y), Some(z)) = (int("x"), int("y"), int("z")) {
-                extras.block_entity_order.push((x, y, z));
+            if let Some(at) = block_entity_order::saved_at(e, [*x, *z]) {
+                extras.block_entity_order.push(at);
             }
-            match decode_block_entity(e) {
+            match decode_block_entity(e).map(|(p, be)| (block_entity_pos(p, [*x, *z]), be)) {
                 Some(mut be) => {
                     if let Ok(Some(data)) = attachment_compound(e.get(ATTACHMENTS_KEY)) {
                         extras.block_entity_attachments.push((
@@ -3640,8 +3640,8 @@ pub enum WorldPreset {
     Amplified,
     SingleBiomeSurface,
     /// `minecraft:debug_all_block_states`: a grid of every block state
-    /// (`DebugLevelSource`). The create screen does not offer it; a data
-    /// pack, `level-type` or a saved world names it.
+    /// (`DebugLevelSource`). The create screen offers it only with Alt held;
+    /// a data pack, `level-type` or a saved world names it too.
     Debug,
 }
 impl WorldPreset {
@@ -6001,6 +6001,49 @@ mod tests {
         assert_eq!(short.get(0, -64, 0), stone.0);
     }
 
+    /// `BlockEntity.getPosFromTag`: a block entity saved under another chunk's
+    /// coordinates is read into the chunk that saved it (vanilla warns and
+    /// keeps the low four bits), instead of landing where that chunk has no
+    /// block.
+    #[test]
+    fn a_block_entity_saved_under_another_chunks_coordinates_moves_here() {
+        let Some(root) = std::env::var_os("HORIZON_TEST_RESOURCES") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let assets = crate::assets::Assets::load(&root).expect("assets");
+        let biomes = Biomes::load(&root).expect("biomes");
+        let tag = horizon_world::nbt::parse_snbt(
+            r#"{xPos:0,zPos:0,yPos:-4,Status:"minecraft:full",sections:[],block_entities:[{id:"minecraft:chest",x:37,y:70,z:-3,Items:[]}]}"#,
+        )
+        .unwrap()
+        .0;
+        let chunk = decode_with(
+            &NamedTag {
+                name: "".into(),
+                tag,
+            },
+            assets.registry,
+            &biomes,
+            None,
+            ColumnLayout::VANILLA,
+        )
+        .expect("chunk");
+        let positions: Vec<(i32, i32, i32)> =
+            chunk.block_entities.iter().map(|(p, _)| *p).collect();
+        assert_eq!(
+            positions,
+            [(5, 70, 13)],
+            "moved into the chunk that saved it"
+        );
+        let order = &chunk.saved.as_ref().expect("extras").block_entity_order;
+        assert_eq!(
+            order,
+            &[(5, 70, 13)],
+            "load order follows the moved position"
+        );
+    }
+
     #[test]
     fn nether_and_end_chunks_save_with_their_own_height() {
         let Some(root) = std::env::var_os("HORIZON_TEST_RESOURCES") else {
@@ -6679,7 +6722,7 @@ mod tests {
         let mut crafter = crate::containers::Crafter::default();
         crafter.items[2] = Some(crate::items::ItemStack::new("minecraft:stick", 5));
         crafter.disabled[4] = true;
-        crafter.triggered = true;
+        crafter.triggered = 1;
         crafter.crafting_ticks = 3;
         let tag = encode_block_entity(
             (7, 8, 9),
@@ -6693,9 +6736,49 @@ mod tests {
         };
         assert_eq!(back.items[2].as_ref().map(|s| s.count), Some(5));
         assert!(back.disabled[4] && !back.disabled[3]);
-        assert!(back.triggered);
+        assert!(back.is_triggered());
         assert_eq!(back.crafting_ticks, 3);
         assert_eq!(back.redstone_signal(), 2);
+    }
+    /// `triggered` is an int vanilla saves as it is and calls triggered only at 1, so other
+    /// values come back unchanged and untriggered.
+    #[test]
+    fn crafter_triggered_keeps_the_whole_int() {
+        for value in [0, 1, 5, -1, 65537] {
+            let crafter = crate::containers::Crafter {
+                triggered: value,
+                ..Default::default()
+            };
+            let tag = encode_block_entity(
+                (0, 0, 0),
+                &crate::containers::BlockEntity::Crafter(crafter),
+                "minecraft:crafter",
+            );
+            let (_, back) = decode_block_entity(&tag).expect("crafter");
+            let crate::containers::BlockEntity::Crafter(back) = back else {
+                panic!("not a crafter");
+            };
+            assert_eq!(back.triggered, value);
+            assert_eq!(back.is_triggered(), value == 1, "triggered {value}");
+        }
+    }
+    #[test]
+    fn crafter_triggered_double_load_floors_and_saturates() {
+        for (value, expected) in [(-0.5_f64, -1), (1.5, 1), (4294967297.0, i32::MAX)] {
+            let tag = Tag::compound([
+                ("id", string("minecraft:crafter")),
+                ("x", Tag::Int(0)),
+                ("y", Tag::Int(0)),
+                ("z", Tag::Int(0)),
+                ("triggered", Tag::Double(value.to_bits())),
+            ]);
+            let (_, back) = decode_block_entity(&tag).expect("crafter");
+            let crate::containers::BlockEntity::Crafter(back) = back else {
+                panic!("not a crafter");
+            };
+            assert_eq!(back.triggered, expected, "triggered {value}d");
+            assert_eq!(back.is_triggered(), expected == 1, "triggered {value}d");
+        }
     }
     #[test]
     fn campfire_block_entity_round_trips() {

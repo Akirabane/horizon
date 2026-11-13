@@ -961,11 +961,11 @@ pub fn mob_to_nbt(
             }
         }
         "minecraft:piglin" | "minecraft:piglin_brute" | "minecraft:hoglin" => {
-            // Only Piglin.addAdditionalSaveData writes CannotHunt, always.
             if id == "minecraft:piglin_brute" {
                 map.remove(&"CannotHunt".into());
             } else if id == "minecraft:piglin" {
-                map.entry("CannotHunt".into()).or_insert(Tag::Byte(0));
+                let hunt = m.extra.piglin.cannot_hunt as i8;
+                map.insert("CannotHunt".into(), Tag::Byte(hunt));
             }
             map.insert(
                 "IsImmuneToZombification".into(),
@@ -1652,9 +1652,7 @@ pub fn mob_to_nbt(
         if let Some(saddle) = m.saddle_item() {
             equipment.insert("saddle".into(), crate::save::item_to_nbt(&saddle));
         }
-        // A happy ghast wears its harness in the body slot (and a nautilus
-        // its armour, a sulfur cube its swallowed block, a wolf its armor,
-        // with the durability it lost).
+        // Body slot: harness, armour, a cube's block, a wolf's armor; emptied, it leaves the earlier save.
         if crate::mobs::species::body_slot(m.species())
             && let Some(id) = &m.extra.body
         {
@@ -1664,6 +1662,8 @@ pub fn mob_to_nbt(
                 stack.extra = m.extra.body_extra.clone();
             }
             equipment.insert("body".into(), crate::save::item_to_nbt(&stack));
+        } else if crate::mobs::species::body_slot(m.species()) {
+            equipment.remove(&"body".into());
         }
         // Vanilla saves `equipment` only when something is equipped.
         if equipment.is_empty() {
@@ -3051,8 +3051,8 @@ pub fn arrow_to_nbt(
         put(&mut tag, key, value);
     }
     if let Tag::Compound(map) = &mut tag {
-        map.entry("SoundEvent".into())
-            .or_insert_with(|| string("minecraft:entity.arrow.hit"));
+        let sound = a.saved_sound_event(map.get(&"SoundEvent".into()));
+        map.insert("SoundEvent".into(), sound);
         // Projectile: LeftOwner only when set; Owner as the UUID.
         map.remove(&"LeftOwner".into());
         map.remove(&"inBlockState".into());
@@ -3142,7 +3142,7 @@ pub fn arrow_from_nbt(
         a.spectral_duration = number(tag.get("Duration")).unwrap_or(200) as i32;
     }
     a.pickup_item = item;
-    a.fired_from_weapon = tag.get("weapon").and_then(item_from_nbt);
+    a.load_weapon_and_sound(tag, item_from_nbt);
     p.stuck = a.in_ground;
     Some((p, tag.get("inBlockState").cloned()))
 }
@@ -4569,6 +4569,37 @@ mod tests {
         };
         assert_eq!(id("body"), "minecraft:diamond_horse_armor");
         assert_eq!(id("head"), "minecraft:iron_helmet");
+    }
+
+    /// A body item taken off (`/item replace entity <cube> armor.body with minecraft:air`)
+    /// is not saved again from the entity's earlier save: vanilla writes `equipment.body` only
+    /// while the slot holds something (#12038).
+    #[test]
+    fn an_emptied_body_slot_is_not_saved_from_the_earlier_nbt() {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let ty = Arc::make_mut(&mut kind);
+        ty.id = "minecraft:sulfur_cube".into();
+        ty.species = crate::mobs::Species::SulfurCube;
+        let types = [("minecraft:sulfur_cube".into(), kind)].into();
+        let raw = Tag::compound([
+            ("id", string("minecraft:sulfur_cube")),
+            ("Pos", doubles(&[4.5, 220.0, 4.5])),
+            (
+                "equipment",
+                Tag::compound([(
+                    "body",
+                    Tag::compound([
+                        ("id", string("minecraft:oak_planks")),
+                        ("count", Tag::Int(1)),
+                    ]),
+                )]),
+            ),
+        ]);
+        let mut m = mob_from_nbt(&raw, &types, 1, None).unwrap();
+        assert_eq!(m.extra.body.as_deref(), Some("minecraft:oak_planks"));
+        m.extra.body = None;
+        let saved = mob_to_nbt(&m, [0; 4], Some(&raw), None, |_| None);
+        assert!(saved.get("equipment").is_none(), "{saved:?}");
     }
 
     /// A wolf loads its armor (`equipment.body`) into the body slot with the
