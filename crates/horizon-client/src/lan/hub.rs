@@ -2169,7 +2169,7 @@ impl Hub {
         let ticks = self.ticks;
         let g = &mut self.guests[i];
         g.teleport_tick = ticks;
-        g.ticket_chunk = Some(g.ticket_chunk()); // `teleport` has no `move`
+        g.held_ticket_chunk = Some(g.ticket_chunk()); // `teleport` has no `move`
         if let Some(p) = position {
             g.position = p;
             g.previous_position = p;
@@ -4274,7 +4274,7 @@ impl Hub {
         // A passenger only turns: its vehicle carries it (absSnapTo where it is).
         if g.vehicle.is_some() {
             (g.yaw, g.pitch) = (yaw, pitch);
-            g.ticket_chunk = None;
+            g.release_tickets();
             return;
         }
         let d = [0, 1, 2].map(|k| to[k] - g.first_good[k]);
@@ -5088,7 +5088,7 @@ impl Hub {
     /// closes once its chunk is in) and TeleportTransition.PLAY_PORTAL_SOUND.
     pub fn land(&mut self, i: usize, at: [f64; 3]) {
         self.guests[i].landing = false;
-        self.guests[i].place(at); // added to the new level at the exit
+        self.guests[i].place(at); // `teleport` holds the chunk it leaves: the exit's
         self.teleport(i, Some(at));
         let g = &self.guests[i];
         g.send(&C::GameEvent(play::GameEvent {

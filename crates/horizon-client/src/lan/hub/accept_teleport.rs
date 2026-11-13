@@ -33,6 +33,7 @@ impl Hub {
             return;
         }
         g.position = at;
+        g.release_tickets(); // `handlePlayerPositionChange`: `ServerChunkCache.move`
         g.awaiting_teleport = None;
         // The prediction's replay starts again where the client now is.
         if recording {
