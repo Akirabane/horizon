@@ -145,19 +145,41 @@ pub fn discover(world: &Path) -> Vec<DataPack> {
 /// `FolderRepositorySource.loadPacks`: packs in Create World's temporary
 /// folder or a world's data-pack directory, with required folder metadata.
 pub fn discover_folder(dir: &Path) -> Vec<DataPack> {
+    discover_folder_with(dir, &crate::packs::DirectoryValidator::game())
+}
+/// [`discover_folder`] under an explicit `allowed_symlinks.txt` validator.
+pub(crate) fn discover_folder_with(
+    dir: &Path,
+    validator: &crate::packs::DirectoryValidator,
+) -> Vec<DataPack> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut packs = Vec::new();
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        let path = e.path();
+        // `PackDetector.detectPackResources`: a link, or a pack holding one, is
+        // not a pack unless the validator allows the target; the id stays the
+        // entry's name while the contents come from the target.
+        let path = match crate::packs::detected_pack_path(&e.path(), validator) {
+            Ok(Some(path)) => path,
+            Ok(None) => continue,
+            Err(err) => {
+                log::warn!(
+                    "Failed to read properties of '{}', ignoring: {err}",
+                    e.path().display()
+                );
+                continue;
+            }
+        };
         if path.is_dir() && folder_metadata_present(&path) {
             packs.push(DataPack {
                 id: format!("file/{name}"),
                 source: Source::Dir(path),
             });
-        } else if name.ends_with(".zip")
+        } else if path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().ends_with(".zip"))
             && let Ok(z) = Zip::open(&path)
             && z.contains("pack.mcmeta")
         {
