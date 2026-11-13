@@ -42,7 +42,6 @@ use winit::keyboard::KeyCode;
 
 mod guest_body;
 mod horizon_channels;
-use horizon_channels::horizon_channel;
 
 #[cfg(test)]
 mod crack_feedback_tests;
@@ -54,7 +53,7 @@ pub(super) struct GuestPlay {
     destroy_delay: u32,
     using: Option<(usize, u32)>,
     use_duration: i32,
-    use_ticks_set: bool,
+    use_start: super::using_item::UseStart,
     use_delay: u32,
     /// The shield's ItemCooldowns entry: an axe disabled it for this many ticks.
     pub(super) shield_cooldown: u32,
@@ -202,7 +201,7 @@ pub(super) struct GuestSwap {
     destroy_delay: u32,
     using: Option<(usize, u32)>,
     use_duration: i32,
-    use_ticks_set: bool,
+    use_start: super::using_item::UseStart,
     use_delay: u32,
     pub(super) shield_cooldown: u32,
     /// The guest's item cooldowns (`Game::cooldowns` for its turn).
@@ -616,7 +615,7 @@ impl Game<'_> {
         let destroy_delay = std::mem::replace(&mut self.destroy_delay, play.destroy_delay);
         let using = std::mem::replace(&mut self.using, play.using.take());
         let use_duration = std::mem::replace(&mut self.use_duration, play.use_duration);
-        let use_ticks_set = std::mem::replace(&mut self.use_ticks_set, play.use_ticks_set);
+        let use_start = std::mem::replace(&mut self.use_start, std::mem::take(&mut play.use_start));
         let use_delay = std::mem::replace(&mut self.use_delay, play.use_delay);
         let shield_cooldown = std::mem::replace(&mut self.shield_cooldown, play.shield_cooldown);
         let cooldowns = std::mem::replace(&mut self.cooldowns, std::mem::take(&mut play.cooldowns));
@@ -744,7 +743,7 @@ impl Game<'_> {
             destroy_delay,
             using,
             use_duration,
-            use_ticks_set,
+            use_start,
             use_delay,
             shield_cooldown,
             cooldowns,
@@ -846,7 +845,7 @@ impl Game<'_> {
             destroy_delay,
             using,
             use_duration,
-            use_ticks_set,
+            use_start,
             use_delay,
             shield_cooldown,
             cooldowns,
@@ -1005,7 +1004,7 @@ impl Game<'_> {
         play.destroy_delay = std::mem::replace(&mut self.destroy_delay, destroy_delay);
         play.using = std::mem::replace(&mut self.using, using);
         play.use_duration = std::mem::replace(&mut self.use_duration, use_duration);
-        play.use_ticks_set = std::mem::replace(&mut self.use_ticks_set, use_ticks_set);
+        play.use_start = std::mem::replace(&mut self.use_start, use_start);
         play.use_delay = std::mem::replace(&mut self.use_delay, use_delay);
         play.shield_cooldown = std::mem::replace(&mut self.shield_cooldown, shield_cooldown);
         play.cooldowns = std::mem::replace(&mut self.cooldowns, cooldowns);
@@ -1608,7 +1607,7 @@ impl Game<'_> {
                 );
                 return false;
             }
-            self.unpack_boat_loot(i);
+            self.unpack_boat_loot(i, true);
         }
         // `createMenu` (ChestMenu.threeRows or a HopperMenu), and
         // `MenuProvider.getDisplayName`, the vehicle's name key.
@@ -1636,64 +1635,6 @@ impl Game<'_> {
         host.hub
             .open_container(conn, menu, title, pos, slots, items, None);
         true
-    }
-
-    /// `ContainerEntity.unpackChestVehicleLootTable` for a chest boat: the table
-    /// its raw NBT still holds rolls into the slots on the first open (an empty
-    /// boat, as a command leaves one), and `player_generates_container_loot`
-    /// fires for the player who opened it.
-    fn boat_loot_pending(&self, id: u32) -> bool {
-        matches!(
-            self.persist.raw.get(&id),
-            Some(horizon_world::nbt::Tag::Compound(map)) if map.contains_key(&"LootTable".into())
-        )
-    }
-
-    fn unpack_boat_loot(&mut self, i: usize) {
-        use horizon_world::nbt::Tag;
-        let id = self.boats[i].id;
-        let (table, seed) = {
-            let Some(Tag::Compound(map)) = self.persist.raw.get_mut(&id) else {
-                return;
-            };
-            let Some(table) = crate::save::text(map.get(&"LootTable".into()))
-                .and_then(|id| horizon_client_core::identifier::normalize_id(&id))
-            else {
-                return;
-            };
-            let seed = match map.get(&"LootTableSeed".into()) {
-                Some(Tag::Long(seed)) => Some(*seed),
-                _ => None,
-            };
-            // The table is spent even when nothing can be rolled into it (the
-            // loot data is not loaded): vanilla clears it before filling.
-            map.remove(&"LootTable".into());
-            map.remove(&"LootTableSeed".into());
-            (table, seed)
-        };
-        // `LootTable.fill` sets the slots it rolls and leaves the rest; a boat
-        // that already holds something keeps it, so no table is applied over it.
-        if self.boats[i].items.iter().any(Option::is_some) {
-            return;
-        }
-        let loot = crate::structure_blocks::loot_data(&self.options.resources, &self.pack_files());
-        let b = &self.boats[i];
-        let at = Vec3::new(b.position.x, b.position.y, b.position.z);
-        let biome = self.biome_name_at(at).unwrap_or_default();
-        let pos = (
-            b.position.x.floor() as i32,
-            b.position.y.floor() as i32,
-            b.position.z.floor() as i32,
-        );
-        crate::structure_blocks::roll_container(
-            &mut self.boats[i].items,
-            loot.as_deref(),
-            table.clone(),
-            seed,
-            pos,
-            &biome,
-        );
-        self.trigger_loot_table(&table);
     }
 
     /// The guest's open container is closing (`AbstractContainerMenu.removed`):
@@ -2136,22 +2077,8 @@ impl Game<'_> {
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return;
         };
-        // Plugin channels a client registers in play (minecraft:register), from a dead player
-        // too; the packet goes on as before.
-        if let S::CustomPayload(p) = &packet
-            && let Some(register) = horizon_client::lan::channel_registration(&p.channel)
-        {
-            self.guest_channels(host, gi, &p.data, register);
-        }
-        // A plugin channel's message on a channel that isn't one of Horizon's own (the match below
-        // takes those) is for the mods, from a dead player too: vanilla's handleCustomPayload doesn't
-        // look at health.
-        let packet = match packet {
-            S::CustomPayload(p) if !horizon_channel(&p.channel) => {
-                self.guest_custom_payload(host, conn, p.channel, p.data);
-                return;
-            }
-            packet => packet,
+        let Some(packet) = self.guest_plugin_channels(host, conn, gi, packet) else {
+            return;
         };
         // A dead player acts no more, but the death screen still respawns and chats: its
         // commands run as anyone's (ServerGamePacketListenerImpl.handleChatCommand doesn't
@@ -2343,7 +2270,7 @@ impl Game<'_> {
                                 {
                                     g.native_player_ready_arrow(uuid, &name, &arrow);
                                 }
-                                g.release_used_item(&stack, ticks, false);
+                                g.release_using_item(&stack, ticks);
                                 if listening {
                                     g.native_player_stop_using_item(uuid, &name);
                                 }
@@ -2377,13 +2304,11 @@ impl Game<'_> {
                     let slot = g.selected;
                     std::mem::swap(&mut g.inventory[slot], &mut g.offhand);
                     let (offhand, main) = (g.offhand.clone(), g.inventory[slot].clone());
-                    if let Some(play) = host.play.get_mut(&conn) {
-                        play.using = None;
-                    }
-                    // setItemInHand: the off hand, then the main hand.
+                    // setItemInHand: the off hand, then the main hand, then stopUsingItem.
                     self.as_guest(host, conn, |g| {
                         g.player_on_equip("offhand", main.as_ref(), offhand.as_ref());
                         g.player_on_equip("mainhand", offhand.as_ref(), main.as_ref());
+                        g.stop_using();
                     });
                     let guest = &host.hub.guests[gi];
                     self.native_player_swap_with_equipment_slot(guest.uuid, &guest.name, "offhand");
@@ -2427,13 +2352,13 @@ impl Game<'_> {
                 let g = &mut host.hub.guests[gi];
                 let changed = g.selected != p.slot as usize;
                 g.selected = p.slot as usize;
-                if let Some(play) = host.play.get_mut(&conn)
-                    && changed
+                if changed
+                    && let Some(play) = host.play.get(&conn)
                     && play
                         .using
                         .is_some_and(|(slot, _)| slot != super::shield::OFFHAND_SLOT)
                 {
-                    play.using = None;
+                    self.as_guest(host, conn, |g| g.stop_using());
                 }
             }
             // ServerGamePacketListenerImpl.handlePunch: the main hand swings
@@ -2885,6 +2810,9 @@ impl Game<'_> {
             }
             S::CustomPayload(p) if p.channel == horizon_client::lod_net::CHANNEL => {
                 self.guest_far_terrain(host, conn, &p.data)
+            }
+            S::CustomPayload(p) if p.channel == horizon_client::perf_net::CHANNEL => {
+                self.guest_perf(host, conn, &p.data)
             }
             S::CustomPayload(p) if p.channel == horizon_client::lan::recipes::TRANSFER_CHANNEL => {
                 self.guest_recipe_transfer(host, conn, &p.data);
@@ -3479,13 +3407,7 @@ impl Game<'_> {
         if host.hub.guests[gi].spectator() {
             return;
         }
-        // handleAttack: a target inside the world border, then
-        // `isWithinAttackRange(mainHandItem, box, 3.0)` before anything else, players,
-        // mobs, objects and fireballs alike.
-        if let Some(target) = self.guest_target_box(host, gi, id)
-            && (!self.inside_border(&target)
-                || self.as_guest(host, conn, |g| g.within_attack_range(&target)) != Some(true))
-        {
+        if self.guest_attack_stops(host, gi, id) {
             return;
         }
         // Native mods, where Player.attack starts: a canceled blow does
@@ -5829,6 +5751,7 @@ fn eye_columns(at: [f64; 3], body: Dimensions) -> [std::ops::RangeInclusive<i32>
     [range(at[0]), range(at[2])]
 }
 
+mod attack_checks;
 mod dig_stop;
 use dig_stop::{StopDig, stop_dig};
 
@@ -6467,7 +6390,7 @@ mod guest_close_listener_tests {
 
 #[cfg(test)]
 mod horizon_channel_tests {
-    use super::horizon_channel;
+    use super::horizon_channels::horizon_channel;
 
     #[test]
     fn horizon_channels_reach_their_handlers_and_others_go_to_the_mods() {
@@ -6479,6 +6402,7 @@ mod horizon_channel_tests {
         assert!(horizon_channel(horizon_protocol::quiet::CHANNEL));
         assert!(horizon_channel(horizon_protocol::mod_net::CHANNEL));
         assert!(horizon_channel(horizon_client::lod_net::CHANNEL));
+        assert!(horizon_channel(horizon_client::perf_net::CHANNEL));
         assert!(!horizon_channel("mymod:hello"));
         assert!(!horizon_channel("minecraft:brand"));
     }
