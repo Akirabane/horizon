@@ -125,7 +125,7 @@ variant by draw-list partitioning, or retain the general variant for those draws
 previous positions for correct motion and tracing; the coverage declaration cannot provide them.
 Changing holes means `coverage = "pack"`; normal/parallax shading that keeps the silhouette does not.
 
-Apply the same engine-default rule to `[entity] coverage` now. Engine entity cutoffs, dissolve masks, culling and
+Apply the same engine-default rule to `[entity] coverage` now, without terrain's translucent exception: an entity's layer opacity stays the engine's under `engine`. Engine entity cutoffs, dissolve masks, culling and
 layer opacity remain engine-owned; `pack` opts into returned alpha/discard. This prevents inconsistent coverage
 contracts when entity surface guides, ray hits and posed pipelines arrive. It does not make entities eligible for
 the terrain visibility buffer. Extend shadow/ray coverage only when those paths can evaluate the same rule;
@@ -280,7 +280,7 @@ FSR may be an in-repo backend, DLSS remains an optional native mod under CONTRIB
 | --- | --- |
 | Golden Hour | Both post passes now run at R. Its UV grade and height-scaled glow need no new algorithm; migrate any pixel offsets to `target_size`/`input_size`. It defaults to engine AA. Recheck 50/100/150% scale and TAA, not just 100% with AA off. |
 | `horizon_hdr` | No post chain to resize. Keep engine AA/coverage defaults. Its tone curve now receives resolved O light and runs on every output; sampled-light rounding can change. Its alpha return stops controlling terrain coverage. Add environment/overlay callers as they land. |
-| Other 0.2 users | Last-post window pixels and arbitrary material/entity alpha cease to be defaults. Own AA needs the declaration. Own holes/opacity need `coverage = "pack"`. Recheck depth reconstruction when jitter starts. Update manifests, templates, checker, generated reference and examples atomically with each behaviour change. |
+| Other 0.2 users | Last-post window pixels and arbitrary material/entity alpha cease to be defaults. Own AA needs the declaration. Own holes, and own opacity on solid terrain or entities, need `coverage = "pack"`; translucent terrain's opacity stays the pack's under `engine`. Recheck depth reconstruction when jitter starts. Update manifests, templates, checker, generated reference and examples atomically with each behaviour change. |
 | Names and structs | **In now:** retain #14584's gated-name rule, nonconstructible engine inputs and fixed `Surface`. Do not rename existing `emission`, `resolution` or `normal` for tidiness. Explicit sizes, units and validity remove the ambiguity. |
 | Colour metadata | **In now:** engine resolve/generation inputs carry format, transfer/storage encoding, working primaries, paper-white scale and reset state. The all-linear post result is not the original gamma frame. Keep float light, tone-weight linear temporal blending, and adapt to library colour contracts once. |
 | Physical units / wide colour | **No:** change 1.0 from paper white to nits or install an engine light model. **Additive later:** serve #14584 BT.2020 once all outputs/HUD paths work. No HDR10-to-BT.2020 conversion twice. |
