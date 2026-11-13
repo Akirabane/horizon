@@ -104,7 +104,6 @@ mod code_of_conduct;
 mod combat;
 mod command_blocks;
 mod command_harness;
-use command_harness::silent_teleport;
 mod command_minecarts;
 mod commands;
 mod composter;
@@ -4125,8 +4124,13 @@ impl Game<'_> {
                 .collect()
         });
         if let Some(p) = &self.player {
-            let at = [p.position.x, p.position.z];
-            players.push((self.tickets.player_chunk(at), self.spectator()));
+            players.push((
+                (
+                    (p.position.x.floor() as i32) >> 4,
+                    (p.position.z.floor() as i32) >> 4,
+                ),
+                self.spectator(),
+            ));
         }
         // A spectator the rule skips is still a player: a game that has one
         // must not take the headless fixtures' tick-everywhere case below.

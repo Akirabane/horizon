@@ -1595,10 +1595,11 @@ impl Game<'_> {
                     horizon_client::lan::hub::teleport_cause(Some("command"));
                     self.server_trips.retain(|trip| !trip.is(conn));
                 }
-                let from = self.player.as_ref().map(|p| p.position);
+                let from = self
+                    .player
+                    .as_ref()
+                    .map(|p| [p.position.x, p.position.y, p.position.z]);
                 if let Some(p) = self.player.as_mut() {
-                    self.tickets
-                        .hold_player(p.position, v, super::silent_teleport());
                     p.position = v;
                     p.velocity = Vec3::new(0.0, 0.0, 0.0);
                     p.fall_distance = 0.0;
@@ -1619,7 +1620,7 @@ impl Game<'_> {
                     self.lan_acting,
                     self.lan_acting_uuid,
                     self.lan_acting_name.clone(),
-                    from.map(|v| [v.x, v.y, v.z]),
+                    from,
                 ) {
                     self.teleport_notes
                         .push(super::server_travel::TeleportNote {

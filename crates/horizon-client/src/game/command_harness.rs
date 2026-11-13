@@ -13,7 +13,6 @@
 //! blocks by dimension, block and gravity.
 use super::Game;
 use horizon_client::{Result, text::Text};
-use horizon_protocol::packets::play::{self, Serverbound as S};
 use serde_json::{Value, json};
 use std::{
     path::Path,
@@ -46,44 +45,7 @@ pub(super) fn spans(text: &Text) -> Value {
     Value::Array(out.into_iter().map(|(t, s)| json!([t, s])).collect())
 }
 
-/// `HORIZON_HARNESS_SILENT_TELEPORT`, read once.
-pub(super) fn silent_teleport() -> bool {
-    static SILENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *SILENT.get_or_init(|| std::env::var_os("HORIZON_HARNESS_SILENT_TELEPORT").is_some())
-}
-
 impl Game<'_> {
-    /// `ServerboundAcceptTeleportationPacket`. A program that sets
-    /// `HORIZON_HARNESS_SILENT_TELEPORT` compares against an oracle whose
-    /// player never answers a teleport (so its `handleAcceptTeleportPacket`
-    /// never calls `ServerChunkCache.move`): the harness's client stays silent.
-    pub(super) fn send_teleport_acceptance(&mut self, packet: play::AcceptTeleportation) {
-        if !silent_teleport() {
-            self.send(S::AcceptTeleportation(packet));
-        }
-    }
-    /// The oracle's `ServerPlayer` is never positioned: it stands at the origin
-    /// (`PrepareSpawnTask` does not run) with its tickets there. A new player
-    /// is put there as `ChunkMap.addEntity` does; the harness's own tickets
-    /// start at the origin too.
-    fn harness_owner_origin(&mut self) -> Result<()> {
-        let owner = self
-            .serving
-            .as_ref()
-            .ok_or("command harness: not a server")?
-            .owner;
-        let host = self.lan.as_mut().ok_or("command harness: no hub")?;
-        let i = host
-            .hub
-            .guests
-            .iter()
-            .position(|g| g.uuid == owner && g.placed);
-        let i = i.ok_or("command harness: owner is not connected")?;
-        let at = [0.0, host.hub.guests[i].position[1], 0.0];
-        host.hub.guests[i].place(at);
-        host.hub.teleport(i, None);
-        Ok(())
-    }
     /// Pump the real client's connection, without predicting movement: the
     /// oracle's player stays where commands put it. Errors cross the server
     /// boundary through Integrated::stop, including script and save failures.
@@ -289,10 +251,6 @@ impl Game<'_> {
             std::thread::sleep(Duration::from_millis(2));
         }
         self.harness_owner(|g| g.harness_settle(deadline, None))?;
-        if std::env::var_os("HORIZON_HARNESS_OWNER_ORIGIN").is_some() {
-            self.harness_owner_origin()?;
-            self.harness_owner(|g| g.harness_settle(deadline, None))?;
-        }
         if let Some(path) = std::env::var_os("HORIZON_FISHING_TICK_REFERENCE") {
             let rows = self.harness_owner(|g| Ok(g.fishing_tick_reference()))?;
             std::fs::write(path, serde_json::to_vec(&rows)?)?;

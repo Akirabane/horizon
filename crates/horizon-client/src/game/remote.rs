@@ -6047,14 +6047,14 @@ impl Game<'_> {
             && let Some(player) = self.player.as_ref()
         {
             let at = player.position;
-            self.send_teleport_acceptance(play::AcceptTeleportation {
+            self.send(S::AcceptTeleportation(play::AcceptTeleportation {
                 id: p.teleport,
                 x: at.x,
                 y: at.y,
                 z: at.z,
                 yaw: self.yaw,
                 pitch: self.pitch,
-            });
+            }));
             self.stop_remote_mining();
             self.mining = None;
             return Ok(());
@@ -6098,14 +6098,14 @@ impl Game<'_> {
         }
         // handleMovePlayer does not change LocalPlayer.sendPosition's baseline:
         // the next tick must still report the corrected state.
-        self.send_teleport_acceptance(play::AcceptTeleportation {
+        self.send(S::AcceptTeleportation(play::AcceptTeleportation {
             id: p.teleport,
             x: position.x,
             y: position.y,
             z: position.z,
             yaw,
             pitch,
-        });
+        }));
         // Then MultiPlayerGameMode.stopDestroyBlock: a dig the teleport (an
         // anticheat's setback, a /tp) interrupts is aborted on the wire, and the
         // attack strength starts again.
