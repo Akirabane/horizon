@@ -20,7 +20,7 @@ use horizon_client::{
     particles::{ParticleOptions, ParticleType},
     random_source,
     scoreboard::pushable_by,
-    sound_engine::{CartSound, PlayResult, SoundInstance, Sounds},
+    sound_engine::{BLOCKS, CartSound, PlayResult, SoundInstance, Sounds},
 };
 use horizon_core::{
     geometry::{Aabb, Vec3, trig},
@@ -1532,8 +1532,9 @@ impl Game<'_> {
         }
     }
     /// `MinecartTNT.primeFuse`: fuse 80, then `Level.broadcastEntityEvent`
-    /// (`EntityEvent.TNT_PRIME`, 70) and `SoundEvents.TNT_PRIMED`. A client
-    /// that receives 70 only sets the fuse (`handleEntityEvent`).
+    /// (`EntityEvent.TNT_PRIME`, 70) and, unless the cart is silent,
+    /// `SoundEvents.TNT_PRIMED` on `SoundSource.BLOCKS`. A client that
+    /// receives 70 only sets the fuse (`handleEntityEvent`).
     fn prime_cart(&mut self, c: &mut Minecart) {
         if !self.ui.rules.bool("tnt_explodes") {
             return;
@@ -1542,8 +1543,10 @@ impl Game<'_> {
         let at = [c.position.x, c.position.y, c.position.z];
         let id = c.id as i32;
         self.lan_entity_event(id, TNT_PRIME_EVENT, at);
-        self.audio
-            .play("minecraft:entity.tnt.primed", Some(at), 1.0, 1.0);
+        if !self.entity_silent(c.id) {
+            self.audio
+                .play_on(BLOCKS, "minecraft:entity.tnt.primed", Some(at), 1.0, 1.0);
+        }
     }
     /// `MinecartTNT.handleEntityEvent`: event 70 calls `primeFuse`, which on a
     /// client only sets the fuse to 80. The window then counts it down
@@ -2266,8 +2269,9 @@ impl Game<'_> {
             self.trigger_loot_table(&loot.table);
         }
     }
-    /// `interact`: ride, open, fuel or ignite the cart under the crosshair, or
-    /// the one a guest's interact packet named.
+    /// `interact`: ride, open or fuel the cart under the crosshair, or the one
+    /// a guest's interact packet named. A TNT cart has no interact of its own
+    /// (`Entity.interact` passes), so nothing here lights it.
     pub(super) fn interact_cart(&mut self, target: Option<InteractTarget>) -> bool {
         let Some((i, d)) = (match target {
             Some(t) => Self::named_entity(&self.carts, t.id, |c| c.id).map(|i| (i, 0.0)),
@@ -2310,20 +2314,8 @@ impl Game<'_> {
                     }
                 }
             }
-            CartKind::Tnt => {
-                let lighter = held.as_ref().is_some_and(|s| {
-                    matches!(
-                        &*s.item,
-                        "minecraft:flint_and_steel" | "minecraft:fire_charge"
-                    )
-                });
-                if !lighter || self.carts[i].fuse >= 0 {
-                    return false;
-                }
-                let mut c = self.carts[i].clone();
-                self.prime_cart(&mut c);
-                self.carts[i] = c;
-            }
+            // MinecartTNT has no interact of its own (`Entity.interact` passes).
+            CartKind::Tnt => return false,
             // MinecartCommandBlock.interact: a game master gets SUCCESS (the
             // client opens the editor, `open_cart_command_block`), anyone else
             // PASSes to the held item. SUCCESS swings on the client only.
@@ -2927,6 +2919,10 @@ fn tnt_ignites_by_collision(horizontal_collision: bool, speed_sqr: f64) -> bool 
 fn java_degrees(y: f64, x: f64) -> f64 {
     horizon_core::jmath::atan2(y, x) * 180.0 / std::f64::consts::PI
 }
+
+#[cfg(test)]
+#[path = "minecart_tnt_tests.rs"]
+mod minecart_tnt_tests;
 
 #[cfg(test)]
 mod tests {
