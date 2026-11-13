@@ -1663,6 +1663,15 @@ impl Game<'_> {
         }
         self.suck_item_entities(None, hopper, min, max)
     }
+    /// `MinecartHopper.tick`'s `tryConsumeItems` for whichever path ticks the
+    /// cart. `ServerLevel.tickNonPassenger` ticks the vehicle, then its
+    /// passengers, so a ridden cart pulls too; Horizon ticks that one in its
+    /// rider's turn (`tick_cart_riding`). `alive` is `isAlive` after the move.
+    pub(super) fn hopper_cart_tick(&mut self, cart: &mut super::minecarts::Minecart, alive: bool) {
+        if alive && cart.kind == super::minecarts::CartKind::Hopper && cart.enabled {
+            self.hopper_cart_suck(cart);
+        }
+    }
     /// `MinecartHopper.tick`'s `tryConsumeItems` (`suckInItems`) for an enabled
     /// hopper minecart: one item from the container above, else the item
     /// entities over it or touching it, each tick without a cooldown.
@@ -2241,6 +2250,10 @@ mod mod_container_tests {
         assert_eq!(view.slots_for_face(None), [0, 1, 2]);
     }
 }
+
+#[cfg(test)]
+#[path = "hopper_cart_rider_tests.rs"]
+mod hopper_cart_rider_tests;
 
 #[cfg(test)]
 mod hopper_cart_transfer_tests {

@@ -1948,9 +1948,7 @@ impl Game<'_> {
             let mut c = self.carts[i].clone();
             c.loot = loot;
             let alive = self.tick_cart(&mut c, [0.0; 2], i, &mut index);
-            if c.kind == CartKind::Hopper && c.enabled {
-                self.hopper_cart_suck(&mut c);
-            }
+            self.hopper_cart_tick(&mut c, alive);
             let Some(i) = cart_at(&self.carts, id, i) else {
                 self.native_tick_post_one(&round, id, kind);
                 continue;
@@ -2076,6 +2074,8 @@ impl Game<'_> {
         let intent = [left * co - forward * s, forward * co + left * s];
         let mut c = self.carts[i].clone();
         let alive = self.tick_cart(&mut c, intent, i, &mut CartIndex::default());
+        // `MinecartHopper.tick`'s `tryConsumeItems` runs in the rider's turn too.
+        self.hopper_cart_tick(&mut c, alive);
         if let Some(p) = self.player.as_mut() {
             self.previous_position = p.position;
             p.position = Vec3::new(c.position.x, c.position.y + SEAT, c.position.z);
