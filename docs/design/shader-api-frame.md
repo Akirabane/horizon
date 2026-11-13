@@ -78,7 +78,9 @@ Unjittered motion excludes both frames' jitter; add their sampling offsets only 
 
 `frame_index`, `delta_time`, compute dispatches, named-target swaps and histories advance once per **real** frame.
 Generated frames and an extra SDR capture must not run an accumulating post chain again.
-Keep today's `history` meaning: previous real frame's input to the last ordinary post pass, R, black when invalid.
+Keep today's `history` meaning: the previous real frame's input to the last ordinary post pass, at R, black when
+invalid. It stays black when no ordinary pass precedes the last one (a single pass, or only named-target passes
+before it), as today; a pack that needs its own previous frame keeps a named target or, later, a typed kept target.
 Do not redefine it to mean resolved colour. Named-target reads retain their existing ordered-write behaviour.
 Current post entries force alpha to 1, including named outputs: they cannot yet store a distance in alpha.
 Typed data targets below remove that limit without changing colour-target alpha semantics.
@@ -107,7 +109,7 @@ This is an enforced rule, not a promise inferred from the final alpha or from so
 
 | Mode | Solid/cutout | Translucent | Optimizations |
 | --- | --- | --- | --- |
-| `engine` | Engine tests original sampled alpha, including force-opaque leaves and the existing threshold. Returned `Surface.color.a` is ignored. | Engine retains its sampled coverage, alpha discard and blend opacity. Returned alpha is ignored. | Eligible for vanilla-coverage visibility IDs and a truly discard-free opaque fragment. |
+| `engine` | Engine tests original sampled alpha, including force-opaque leaves and the existing threshold. Returned `Surface.color.a` is ignored. | Returned alpha sets blend opacity, as water and glass shaders need; no `discard`. Translucent draws are in neither optimization, so this costs nothing. | Eligible for vanilla-coverage visibility IDs and a truly discard-free opaque fragment. |
 | `pack` | Returned alpha controls the existing alpha test; pack code may discard. No fragment-depth writes. | Returned alpha controls opacity and discard. | Use forward shading and the general opaque/cutout pipeline for affected terrain. Retain ordinary culling, compact storage and OIT when supported. |
 
 The checker walks reachable Naga functions and nested blocks. Refuse `discard` reachable from `material` under
@@ -290,24 +292,24 @@ Sizes are estimated **added plus removed source lines per PR**, leaving room bel
 Documentation and separate fixtures are additional. Re-split a row if actual churn exceeds its range.
 This is the phase/coverage design's slice of #16126, not a new estimate of its entire default-look migration.
 
-| Order | Reviewable change | Size / dependency / place in the plan |
+| Row | Reviewable change | Size / dependency / place in #16126's plan |
 | --- | --- | --- |
 | 1 | Land this contract and reconcile #14035's old “replace world_post” wording; keep API experimental. | Docs only; before implementation (this note). |
 | 2 | Finish #14680's native `ExternalPipeline` adapter without changing pictures. Split neutral layer, scene and mapping hooks across PRs. | 3–5 × 250–450; #16126 step 5, after its M6 prerequisites. A pure file move may be separate under M6's exception. |
 | 3 | Split native scene-chain execution from pure output mapping, preserving existing behaviour first. | 250–400; after 2. Entry seam for #16011 item 4. |
-| 4 | Switch final post to R; add pass/O sizes and AA ownership; route spatial resolve/FXAA/CAS; migrate both packs and reference. | 300–450; after 3; breaking change 1, replaces step 6's opt-in. |
-| 5 | Make one jitter/camera snapshot; add actual/unjittered/previous matrices and history validity; enable pack temporal jitter. | 300–450; after 4; first part of step 7. |
-| 6 | Route TAA/#12926 over the pack result with encoding metadata, tone-weighted linear history and joint resets. | 300–450; after 5; remainder of step 7. No vendor backend or complete motion claim. |
-| 7 | Enforce engine-default terrain/entity coverage; reachable-discard checking; wrapper alpha rules; migrate examples. | 250–450; independent of 2–6: a checker rule and the wrapper's alpha, which the move carries unchanged (the `[entity]` half lands with the entity stage, #15942); breaking change 2. |
-| 8 | Native discard-free opaque/cutout variants, including draw-list handling of displaced replacements. | 200–350; after 7 and compact terrain (#16126 step 2). First part of step 14. |
-| 9 | Analytic gradients; native visibility material resolve; surface output; IDs/pages; backend/fallback integration, each separately. | 5 × 200–450; after 8 and step 10 inputs. Remaining visibility work in step 14. No displaced-triangle IDs in this slice. |
-| 10 | Environment API/check/reference; celestial callers; cloud/OIT callers; lightning/beam/additive callers, each separately. | 4 × 200–450; after 2; step 9's own spec, replacing the proposed glow name. |
-| 11 | Sampled terrain emissive-overlay input and single composition; interpolated vertex-light shading input, separately. Include the small entity fog opt-out in the entity-wrapper work. | 2 × 200–400; after 2; within step 10, beside its glint/back-face work. |
+| 4 | Switch final post to R; add pass/O sizes and AA ownership; route spatial resolve/FXAA/CAS; migrate both packs and reference. | 300–450; after 3; breaking change 1, replaces #16126 step 6's opt-in. |
+| 5 | Make one jitter/camera snapshot; add actual/unjittered/previous matrices and history validity; enable pack temporal jitter. | 300–450; after 4; first part of #16126 step 7. |
+| 6 | Route TAA/#12926 over the pack result with encoding metadata, tone-weighted linear history and joint resets. | 300–450; after 5; remainder of #16126 step 7. No vendor backend or complete motion claim. |
+| 7 | Enforce engine-default terrain/entity coverage; reachable-discard checking; wrapper alpha rules; migrate examples. | 250–450; independent of rows 2–6: a checker rule and the wrapper's alpha, which the move carries unchanged (the `[entity]` half lands with the entity stage, #15942); breaking change 2. |
+| 8 | Native discard-free opaque/cutout variants, including draw-list handling of displaced replacements. | 200–350; after 7 and compact terrain (#16126 step 2). First part of #16126 step 14. |
+| 9 | Sampled terrain emissive-overlay input and single composition; interpolated vertex-light shading input, separately. Include the small entity fog opt-out in the entity-wrapper work. | 2 × 200–400; after row 2; within #16126 step 10, beside its glint/back-face work. Before row 10, which needs these inputs. |
+| 10 | Analytic gradients; native visibility material resolve; surface output; IDs/pages; backend/fallback integration, each separately. | 5 × 200–450; after rows 8 and 9. Remaining visibility work in #16126 step 14. No displaced-triangle IDs in this slice. |
+| 11 | Environment API/check/reference; celestial callers; cloud/OIT callers; lightning/beam/additive callers, each separately. | 4 × 200–450; after row 2; #16126 step 9, replacing the proposed glow name. |
 | 12 | Raw render-hook encoding/phase descriptors in the mod fork, with explicit late-hook semantics. | 150–300; after phase contract; coordinate with 2. Not a public `ExternalPipeline` API. |
-| 13 | Resource-post retained depth and order; per-output tone mapping/capture, separately. | 2 × 250–450; after 6; step 12. Do not fold the hand-layer redesign into these PRs. |
-| 14 | Feed resolved light to generation; map real/made outputs identically; encoding/history integration, separately. | 3 × 200–400; after 6/13; step 13. Hold off jittered/deformed geometry combinations whose motion is invalid. |
+| 13 | Resource-post retained depth and order; per-output tone mapping/capture, separately. | 2 × 250–450; after 6; #16126 step 12. Do not fold the hand-layer redesign into these PRs. |
+| 14 | Feed resolved light to generation; map real/made outputs identically; encoding/history integration, separately. | 3 × 200–400; after 6/13; #16126 step 13. Hold off jittered/deformed geometry combinations whose motion is invalid. |
 
-Only docs/API design, #16126's existing steps 1–4 and the coverage rule (7) proceed before the executor adapter. Runtime rows above
+Only docs/API design, #16126's existing steps 1–4 and the coverage rule (row 7) proceed before the executor adapter. Runtime rows above
 wait for #14680 so the same integration is not rewritten twice. API declarations must not advertise runtime
 support before their caller lands. The environment API can be reviewed earlier, with explicit runtime refusal.
 The coverage default enables optimizations; it does not implement compact input expansion or visibility resolve.
