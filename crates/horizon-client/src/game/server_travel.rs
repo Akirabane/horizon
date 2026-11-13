@@ -656,7 +656,9 @@ impl Game<'_> {
         let anchor = self.is_anchor(self.world.block(x, y, z));
         match self.find_respawn_and_use(config, true) {
             Ok(Some((at, yaw, pitch))) => {
-                if !config.forced && anchor {
+                if anchor {
+                    // PlayerList.respawn: the deplete sound has no `forced`
+                    // test, so a point `/spawnpoint` kept plays it too.
                     let [x, y, z] = config.pos.map(f64::from);
                     self.audio.play(
                         "minecraft:block.respawn_anchor.deplete",
