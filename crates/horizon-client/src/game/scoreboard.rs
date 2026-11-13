@@ -326,10 +326,15 @@ impl Game<'_> {
                         ok = false;
                     }
                 }
-                let team = holder
-                    .as_deref()
-                    .and_then(|h| self.score.board.players_team(h))
-                    .map(|t| t.name.clone());
+                // TamableAnimal.getTeam: a tamed pet with no team of its own
+                // answers with its root owner's.
+                let team = match t {
+                    Target::Mob(id) => self.mob_team(id).map(|t| t.name.clone()),
+                    _ => holder
+                        .as_deref()
+                        .and_then(|h| self.score.board.players_team(h))
+                        .map(|t| t.name.clone()),
+                };
                 for (want, negated) in &s.teams {
                     let matches = match &team {
                         Some(name) => name == want,
@@ -1257,3 +1262,6 @@ mod criterion_tests;
 mod empty_tag_tests;
 #[cfg(test)]
 mod guest_advancement_tests;
+
+#[cfg(test)]
+mod selector_option_tests;
