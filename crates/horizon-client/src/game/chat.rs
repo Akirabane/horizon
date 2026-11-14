@@ -984,6 +984,14 @@ impl Game<'_> {
         // `TagLoader` binds them before the commands exist.
         self.sync_pack_tag_ids();
     }
+    /// The registry snapshot `ServerCommandSuggestionsProvider` answers from,
+    /// with the named random sequences the world has now
+    /// (`RandomSequences.forAllSequences` fills `/random`'s `sequence`
+    /// argument from the live list).
+    pub(super) fn suggestion_registries(&mut self) -> &mut Registries {
+        self.ui.registries.random_sequences = self.rand_sequences.ids();
+        &mut self.ui.registries
+    }
     /// The block the player is looking at, for coordinate suggestions, and
     /// the entity, for entity arguments (ClientSuggestionProvider).
     /// `ClientSuggestionProvider.getRelevantCoordinates` and
