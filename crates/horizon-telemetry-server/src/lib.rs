@@ -111,6 +111,9 @@ pub struct Config {
     pub aggregate_days: Option<Vec<u32>>,
 }
 
+/// The website: the browser origin answered by default, and where a game report's capture link must point.
+pub(crate) const WEBSITE: &str = "https://playhorizon.dev";
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -120,7 +123,7 @@ impl Default for Config {
             items_per_day: 100,
             trust_proxy: false,
             client_ip_header: None,
-            allow_origin: "https://playhorizon.dev".into(),
+            allow_origin: WEBSITE.into(),
             live_per_hour: 600.0,
             live_window: horizon_telemetry::live::WINDOW,
             live_max_sessions: 200_000,

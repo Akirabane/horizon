@@ -30,8 +30,8 @@ pub const AREAS: [&str; 10] = [
     "chunks",
     "commands",
 ];
-/// A measurement's capture, opened on the website's performance viewer (`horizon-perf-share`).
-const CAPTURE_PREFIX: &str = "https://playhorizon.dev/perf/c/";
+/// A measurement's capture, opened on the website's performance viewer (`horizon-perf-share`): its path there.
+const CAPTURE_PATH: &str = "/perf/c/";
 /// GitHub refuses an issue body over 65,536 characters: the log's end is cut to keep under this.
 const MAX_ISSUE_CHARS: usize = 60_000;
 
@@ -172,9 +172,10 @@ pub fn check(body: &Value) -> Result<Map<String, Value>, String> {
         .and_then(Value::as_str)
         .filter(|c| !c.is_empty())
     {
-        let id = capture.strip_prefix(CAPTURE_PREFIX).unwrap_or("");
+        let prefix = format!("{}{CAPTURE_PATH}", crate::WEBSITE);
+        let id = capture.strip_prefix(&prefix).unwrap_or("");
         if id.is_empty() || id.len() > 64 || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
-            return Err(format!("capture: a link under {CAPTURE_PREFIX}"));
+            return Err(format!("capture: a link under {prefix}"));
         }
         out.insert("capture".into(), capture.into());
     }
