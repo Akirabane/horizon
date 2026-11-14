@@ -5977,6 +5977,44 @@ mod tests {
         // Entity.load keeps the saved Air; the orb writes it back unchanged.
         assert_eq!(tag.get("Air"), Some(&Tag::Short(32767)));
     }
+    /// `Entity.saveWithoutId` writes `Fire` for every entity and `Entity.load`
+    /// reads it back with `getShortOr("Fire", 0)`: a summon's `Fire:40s` and the
+    /// `-1s` an entity carries after leaving water both survive, an absent key
+    /// is 0, and the short wraps like `(short) remainingFireTicks`.
+    #[test]
+    fn orbs_save_and_load_their_fire() {
+        let mut o = ExperienceOrb {
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            no_gravity: false,
+            id: 0,
+            position: Vec3::new(1.0, 2.0, 3.0),
+            previous: Vec3::ZERO,
+            velocity: Vec3::ZERO,
+            value: 7,
+            age: 3,
+            on_ground: false,
+            count: 1,
+            ticks: 0,
+            health: 5,
+            air: 300,
+            following: None,
+            fall_distance: 0.0,
+            fire_ticks: 0,
+        };
+        for (ticks, saved) in [(0, 0), (40, 40), (-1, -1), (300, 300), (40_000, -25_536)] {
+            o.fire_ticks = ticks;
+            let tag = orb_to_nbt(&o, [0; 4]);
+            assert_eq!(tag.get("Fire"), Some(&Tag::Short(saved)), "saved {ticks}");
+            assert_eq!(orbs_from_nbt(&tag)[0].fire_ticks, i32::from(saved));
+        }
+        let mut tag = orb_to_nbt(&o, [0; 4]);
+        let Tag::Compound(map) = &mut tag else {
+            unreachable!()
+        };
+        map.remove(&"Fire".into());
+        assert_eq!(orbs_from_nbt(&tag)[0].fire_ticks, 0);
+    }
 }
 
 /// `Brain`'s two measured Warden Unit memories, using actual existing slots.
