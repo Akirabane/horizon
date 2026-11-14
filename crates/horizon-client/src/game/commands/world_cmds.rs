@@ -1064,6 +1064,18 @@ impl Game<'_> {
                 let Some(key) = player.attributes.key(attribute) else {
                     return Err(no_attribute(&name, &description));
                 };
+                // Every arm below starts from an instance or a supplier value,
+                // and vanilla's `getAttributeInstance` (modifier add/remove,
+                // base set), `getEntityWithAttribute` (the gets) and
+                // `resetBaseValue` all throw `no_attribute` when the supplier
+                // creates none: a player has no `minecraft:follow_range`.
+                if !player
+                    .attributes
+                    .has_attribute(Some(key.clone()))
+                    .unwrap_or(false)
+                {
+                    return Err(no_attribute(&name, &description));
+                }
                 let unavailable = |_| no_attribute(&name, &description);
                 match id {
                     "attribute.get" | "attribute.base.get" => {
@@ -2239,6 +2251,10 @@ pub(super) fn look_at(from: [f64; 3], to: [f64; 3]) -> [f32; 2] {
     let yaw = (dz.atan2(dx) * 57.295_776_367_187_5) as f32 - 90.0;
     [wrap_degrees(yaw), pitch]
 }
+
+#[cfg(test)]
+#[path = "attribute_missing_tests.rs"]
+mod attribute_missing_tests;
 
 #[cfg(test)]
 mod allay_owner_damage_tests {
