@@ -8124,10 +8124,10 @@ impl Game<'_> {
             self.bucket_emptied(&stack.item);
             return Ok(UseResult::Success { swing: true });
         }
-        if self.use_block_transformer(stack, hit.pos, hit.face)? {
+        if self.may_use_on(hit.pos) && self.use_block_transformer(stack, hit.pos, hit.face)? {
             return Ok(UseResult::Success { swing: true });
         }
-        if item == "honeycomb" {
+        if self.may_use_on(hit.pos) && item == "honeycomb" {
             let registry = self.pack.assets.registry;
             let old = registry.state(clicked);
             if let Some(waxed) = old.and_then(|old| self.res.transformers().waxed(registry, old))
