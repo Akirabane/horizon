@@ -8351,7 +8351,6 @@ impl Game<'_> {
                 // BlockItem.useOn: a consumable that could not be placed is used
                 // (Item.use), which the server does for this same packet. CONSUME
                 // does not swing, and a full player's FAIL still ends the click.
-                // Adventure's can_place_on leaves the placing to the server.
                 if !reacts
                     && placed.is_none()
                     && self.may_build()
@@ -8634,13 +8633,14 @@ impl Game<'_> {
     /// Run BlockItem.place on a disposable level: where it placed and the
     /// blocks it set. The real level supplies collision shapes and
     /// building-blocking entities; random draws, scheduled ticks and events
-    /// stay in the preview.
+    /// stay in the preview. `ItemStack.useOn` runs it in adventure mode only
+    /// when the used stack's `can_place_on` names the clicked block.
     pub(super) fn remote_can_place(
         &mut self,
         hit: &super::Hit,
         stack: &ItemStack,
     ) -> Option<DryPlace> {
-        if !self.may_build() {
+        if !self.may_build() && !self.stack_can_place_on_in_adventure(stack, hit.pos) {
             return None;
         }
         let ctx = horizon_world::level::PlaceContext {
