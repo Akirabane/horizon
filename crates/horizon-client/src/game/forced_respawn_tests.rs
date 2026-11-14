@@ -66,7 +66,7 @@ fn overworld_spawnpoint_is_validated_at_both_player_blocks() {
                 .expect("Overworld commands must retain a forced configuration");
             assert!(config.forced);
             assert_eq!(config.pos, [5, 64, 5]);
-            let actual = game.resolve_server_respawn(config);
+            let actual = game.resolve_server_respawn(config, true);
             assert_eq!(actual.is_some(), allowed, "{block} at height {height}");
             assert_eq!(game.respawn_config.is_some(), allowed);
             assert_eq!(game.level.world_spawn, Some([0, 80, 0]));
