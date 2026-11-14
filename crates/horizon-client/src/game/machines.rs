@@ -256,6 +256,19 @@ impl Containers<'_> {
             .map_or(64, |i| i.max_stack)
             .max(1)
     }
+    /// `Container.getMaxStackSize(stack)` of a container: the container's own
+    /// limit, at most the item's. `ComposterBlock.InputContainer` (levels 0 to
+    /// 6) and `OutputContainer` (level 8, `READY`), `JukeboxBlockEntity` and
+    /// `ChiseledBookShelfBlockEntity` override `getMaxStackSize` to 1; every
+    /// other container keeps the `Container` default of 99. A composter's
+    /// level 7 is `EmptyContainer` (99), which takes nothing through a face.
+    fn max_stack_in(&self, view: &View, stack: &ItemStack) -> u32 {
+        let container = match view.kind {
+            Kind::Composter(0..=6) | Kind::Composter(8) | Kind::Jukebox | Kind::Bookshelf => 1,
+            _ => 99,
+        };
+        container.min(self.max_stack(stack))
+    }
     /// `HopperBlockEntity.getBlockContainer` (double chests combined, right half
     /// first). `blocked_chests`: `ChestBlock.getContainer(.., false)` returns
     /// nothing for a blocked chest (`isChestBlockedAt`: a redstone conductor
