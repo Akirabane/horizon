@@ -31,18 +31,18 @@
 </p>
 
 <p align="center">
-  <img src="docs/media/readme/card-worlds.webp" alt="Your worlds, same rules: survival, creative and hardcore, and your saves open as they are" width="49%">
-  <img src="docs/media/readme/card-together.webp" alt="Play together: vanilla and Horizon servers, LAN, or a code from a friend" width="49%">
+  <img src="docs/media/readme/panel-worlds.webp" alt="Your worlds, same rules: survival, creative and hardcore, and your saves open as they are" width="49%">
+  <img src="docs/media/readme/panel-together.webp" alt="Play together: vanilla and Horizon servers, LAN, or a code from a friend" width="49%">
 </p>
 
 <p align="center">
-  <img src="docs/media/readme/card-farther.webp" alt="See farther: terrain up to 1,024 chunks away, HDR and controllers" width="49%">
-  <img src="docs/media/readme/card-dimensions.webp" alt="Every dimension: vanilla world generation, mobs, villagers and redstone" width="49%">
+  <img src="docs/media/readme/panel-farther.webp" alt="See farther: terrain up to 1,024 chunks away, HDR and controllers" width="49%">
+  <img src="docs/media/readme/panel-dimensions.webp" alt="Every dimension: vanilla world generation, mobs, villagers and redstone" width="49%">
 </p>
 
 <p align="center">
-  <img src="docs/media/readme/card-mods.webp" alt="Mods in one click: packs, content mods and native Rust mods" width="49%">
-  <img src="docs/media/readme/card-launcher.webp" alt="One launcher: installs the game, updates it and hosts your server" width="49%">
+  <img src="docs/media/readme/panel-mods.webp" alt="Mods in one click: packs, content mods and native Rust mods" width="49%">
+  <img src="docs/media/readme/panel-launcher.webp" alt="One launcher: installs the game, updates it and hosts your server" width="49%">
 </p>
 
 <p align="center">
