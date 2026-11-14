@@ -15,6 +15,7 @@ use horizon_client::{
     hud::HudBatch,
     items::ItemStack,
     merchant::{self, MerchantOffer, TradeContext},
+    random_sequences::RandomSequences,
     text::Text,
     widgets::{Cursor, request_cursor},
 };
@@ -163,24 +164,43 @@ impl merchant::MapMaker for GameMaps<'_> {
     }
 }
 
-impl Game<'_> {
-    pub(super) fn random_sequences_path(&self) -> std::path::PathBuf {
-        self.world_root.join("data/minecraft/random_sequences.dat")
+/// The world's `data/minecraft/random_sequences.dat`.
+fn random_sequences_file(world_root: &std::path::Path) -> std::path::PathBuf {
+    world_root.join("data/minecraft/random_sequences.dat")
+}
+/// `RandomSequences` as opening the world reads it. A world with no file gets new data,
+/// which `MinecraftServer`'s `savedDataStorage.computeIfAbsent(RandomSequences.TYPE)` stores
+/// dirty (`SavedDataStorage.set`): its first save writes it.
+pub(super) fn read_random_sequences(world_root: &std::path::Path) -> RandomSequences {
+    horizon_client::save::read_dat(&random_sequences_file(world_root))
+        .and_then(|t| t.get("data").cloned())
+        .map(|d| RandomSequences::from_nbt(&d))
+        .unwrap_or_else(RandomSequences::new_dirty)
+}
+/// `SavedDataStorage.saveAndJoin` for `RandomSequences`: written only while dirty, with
+/// whatever it holds then, so the emptied map and the salt a `/random reset *` left reach
+/// the file after a draw, and not without one.
+pub(super) fn write_random_sequences(world_root: &std::path::Path, data: &mut RandomSequences) {
+    let Some(data) = data.take_dirty_nbt() else {
+        return;
+    };
+    let tag = horizon_world::nbt::Tag::compound([
+        ("data", data),
+        (
+            "DataVersion",
+            horizon_world::nbt::Tag::Int(horizon_world::DATA_VERSION),
+        ),
+    ]);
+    if let Err(e) = horizon_client::save::write_dat(&random_sequences_file(world_root), tag) {
+        log::warn!("the villager random sequences were not written: {e}");
     }
+}
+
+impl Game<'_> {
     /// `RandomSequences` as `random_sequences.dat` (not on a server's guest).
     pub(super) fn save_random_sequences(&mut self) {
-        if self.remote.is_some() || self.rand_sequences.ids().is_empty() {
-            return;
-        }
-        let tag = horizon_world::nbt::Tag::compound([
-            ("data", self.rand_sequences.to_nbt()),
-            (
-                "DataVersion",
-                horizon_world::nbt::Tag::Int(horizon_world::DATA_VERSION),
-            ),
-        ]);
-        if let Err(e) = horizon_client::save::write_dat(&self.random_sequences_path(), tag) {
-            log::warn!("the villager random sequences were not written: {e}");
+        if self.remote.is_none() {
+            write_random_sequences(&self.world_root, &mut self.rand_sequences);
         }
     }
     /// `AbstractVillager.addOffersFromTradeSet` with the world's random
@@ -948,6 +968,10 @@ fn drag_scroll(y: f32, offers: usize) -> usize {
 fn scrolled(scroll: usize, max: usize, d: f32) -> usize {
     ((scroll as f64 - f64::from(d)) as i32).clamp(0, max as i32) as usize
 }
+
+#[cfg(test)]
+#[path = "random_sequences_save_tests.rs"]
+mod random_sequences_save_tests;
 
 #[cfg(test)]
 mod tests {
