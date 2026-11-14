@@ -66,7 +66,7 @@ fn overworld_spawnpoint_is_validated_at_both_player_blocks() {
                 .expect("Overworld commands must retain a forced configuration");
             assert!(config.forced);
             assert_eq!(config.pos, [5, 64, 5]);
-            let actual = game.resolve_server_respawn(config);
+            let actual = game.resolve_server_respawn(config, true);
             assert_eq!(actual.is_some(), allowed, "{block} at height {height}");
             assert_eq!(game.respawn_config.is_some(), allowed);
             assert_eq!(game.level.world_spawn, Some([0, 80, 0]));
@@ -129,7 +129,7 @@ fn a_forced_spawnpoint_on_a_respawn_anchor_still_depletes_with_its_sound() {
     game.audio.capture = Some(Vec::new());
     let config = RespawnConfig::forced(Dim::Nether, pos, 0.0, 0.0);
     game.respawn_config = Some(config);
-    game.resolve_server_respawn(config)
+    game.resolve_server_respawn(config, true)
         .expect("a forced anchor keeps the point");
     // The whoosh is the anchor's own block position, at full volume and pitch.
     let played = game.audio.capture.take().expect("capture");
