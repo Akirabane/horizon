@@ -8,7 +8,7 @@
   <a href="https://playhorizon.dev/docs/"><b>Docs</b></a> ·
   <a href="https://discord.gg/playhorizon"><b>Discord</b></a> ·
   <a href="ROADMAP.md"><b>Roadmap</b></a> ·
-  <a href="#contributing"><b>Contributing</b></a>
+  <a href="CONTRIBUTING.md"><b>Contributing</b></a>
 </p>
 
 # Horizon
@@ -56,31 +56,23 @@ You need a Microsoft account that owns Minecraft: Java Edition. Horizon contains
 - **Servers.** Host one from the launcher, or run `horizon-server` on a VPS with no Java. See the [hosting guide](https://playhorizon.dev/docs/hosting).
 - **Agent control.** Scripts and AI agents can play through `horizon-ctl`. See the [agent guide](docs/native-client.md#agent-control-horizon-ctl-and-mcp).
 
-## Build from source
+<p align="center">
+  <img src="docs/media/readme/mascot-start.webp" alt="A voxel character holding a sign: 3.5x faster start than modded Java" height="320">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/media/readme/dragon-mods.webp" alt="A voxel inventor dragon holding a sign: mod API ready, port your mods to Rust" height="320">
+</p>
 
-You need Rust 1.90 or later, Python 3.11 or later, JDK 25 and your own copy of Java Edition 26.3 with its server jar. On Linux, also `libasound2-dev` and `libudev-dev`.
+<p align="center">
+  <sub>Launch to title screen in about 3 seconds, against about 11 seconds for Java with Sodium, Lithium, FerriteCore and ImmediatelyFast.</sub>
+</p>
 
-```sh
-git clone https://github.com/horizon-rust/horizon.git && cd horizon
-cargo run --release -p horizon-prepare -- --prepare --server-jar ~/Downloads/server.jar
-cargo run --release -p horizon-client
-```
+<p align="center">
+  <a href="docs/native-client.md#run-from-a-checkout"><b>Build guide</b></a> ·
+  <a href="CONTRIBUTING.md"><b>Contributing</b></a> ·
+  <a href="GOVERNANCE.md"><b>Governance</b></a> ·
+  <a href="https://discord.gg/playhorizon"><b>Discord</b></a>
+</p>
 
-The [native client guide](docs/native-client.md) explains where the jar comes from, the options and the controls. Never commit or share the prepared files.
+<sub>Horizon is released under the [MIT licence](LICENSE) for the project's original work; dependencies keep their own licences, see the [notices](THIRD_PARTY_NOTICES.md). It is made by [Ludovic Marie](https://lu4ovic.com) ([@ludovic111](https://github.com/ludovic111)) and [its contributors](https://github.com/horizon-rust/horizon/graphs/contributors). You can support it on [GitHub Sponsors](https://github.com/sponsors/ludovic111).</sub>
 
-## Contributing
-
-Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), then run the self-check before you open a pull request:
-
-```sh
-git config core.hooksPath .githooks
-python3 tools/pr_ready.py
-```
-
-Questions go to [Discord](https://discord.gg/playhorizon), and [GOVERNANCE.md](GOVERNANCE.md) explains how the project is run.
-
-## Licence
-
-[MIT](LICENSE), for the project's original work; dependencies keep their own licences ([notices](THIRD_PARTY_NOTICES.md)). Horizon is made by [Ludovic Marie](https://lu4ovic.com) ([@ludovic111](https://github.com/ludovic111)) and [its contributors](https://github.com/horizon-rust/horizon/graphs/contributors); support it on [GitHub Sponsors](https://github.com/sponsors/ludovic111).
-
-NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT. Minecraft is a trademark of Mojang Synergies AB; its code and assets belong to Mojang and Microsoft under the [Minecraft EULA](https://www.minecraft.net/en-us/eula).
+<sub>NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT. Minecraft is a trademark of Mojang Synergies AB; its code and assets belong to Mojang and Microsoft under the [Minecraft EULA](https://www.minecraft.net/en-us/eula).</sub>
