@@ -339,7 +339,13 @@ pub fn can_be_leashed(m: &Mob) -> bool {
         // block in its body takes a lead. Its category is a monster's, which
         // `Mob.canBeLeashed`'s `!(this instanceof Enemy)` rule would refuse.
         S::SulfurCube => super::sulfur_cube::has_body(m),
-        _ => !m.hostile() && !m.removed,
+        // CamelHusk.canBeLeashed and ZombieHorse.canBeLeashed: neither is an
+        // `Enemy`, though both are in the monster category, so
+        // `Mob.canBeLeashed` allows them; a mob riding one (`isMobControlled`)
+        // refuses the lead, but a tamed zombie horse takes it anyway.
+        S::CamelHusk => m.extra.rider.is_none(),
+        S::ZombieHorse => m.extra.tame || m.extra.rider.is_none(),
+        _ => !m.is_enemy() && !m.removed,
     }
 }
 
@@ -1002,6 +1008,38 @@ mod tests {
                 can_be_leashed(&new("minecraft:zombie_nautilus")),
                 "a calm zombie nautilus"
             );
+        });
+        let _ = ran;
+    }
+
+    /// `CamelHusk.canBeLeashed` is `!isMobControlled()` and
+    /// `ZombieHorse.canBeLeashed` is `isTamed() || !isMobControlled()`: a
+    /// riderless husk and a wild zombie horse take a lead even though both are
+    /// in the monster category, and a mob on a husk's back refuses it.
+    #[test]
+    fn a_camel_husk_takes_a_lead_until_a_mob_rides_it() {
+        let ran = crate::mobs::world::with_test_world(&[], |_, types| {
+            let new = |kind: &str| {
+                Mob::new(
+                    1,
+                    std::sync::Arc::new(types.types[kind].clone()),
+                    horizon_core::geometry::Vec3::ZERO,
+                    0.0,
+                )
+            };
+            let husk = new("minecraft:camel_husk");
+            assert!(can_be_leashed(&husk), "a riderless camel husk");
+            let mut ridden = new("minecraft:camel_husk");
+            ridden.extra.rider = Some(2);
+            assert!(!can_be_leashed(&ridden), "a mob rides the husk");
+            assert!(can_be_leashed(&new("minecraft:zombie_horse")), "wild");
+            let mut tamed = new("minecraft:zombie_horse");
+            tamed.extra.tame = true;
+            tamed.extra.rider = Some(2);
+            assert!(can_be_leashed(&tamed), "a tamed zombie horse");
+            let mut wild = new("minecraft:zombie_horse");
+            wild.extra.rider = Some(2);
+            assert!(!can_be_leashed(&wild), "a mob rides the wild horse");
         });
         let _ = ran;
     }

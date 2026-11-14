@@ -1865,6 +1865,30 @@ mod tests {
         let v = escape_vector(0.9, 0.6, 45.0);
         assert!((v.x + edge).abs() < 1.0e-3 && (v.z - edge).abs() < 1.0e-3);
     }
+
+    /// `CamelHusk.interact` sets `PersistenceRequired` before it hands the click
+    /// on, so a husk a player saddled is kept past the monster category's 128
+    /// blocks (`Mob.checkDespawn` reads `isPersistenceRequired`).
+    #[test]
+    fn a_camel_husk_keeps_itself_once_clicked() {
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        mount(&mut game, "minecraft:camel_husk", 7, [1.5, 64.0, -2.5], 7);
+        assert!(!game.mobs[0].persistent);
+        assert!(
+            !horizon_client::mobs::ai::requires_custom_persistence(&game.mobs[0]),
+            "nothing else keeps it: the click must"
+        );
+        game.inventory[0] = Some(ItemStack::new("minecraft:saddle", 1));
+        let target = Some(crate::game::InteractTarget {
+            id: 7,
+            location: [0.0; 3],
+        });
+        assert!(game.interact_mob(target).unwrap(), "the saddle is used");
+        assert!(game.mobs[0].extra.saddled, "the saddle went on");
+        assert!(game.mobs[0].persistent, "a clicked camel husk stays");
+    }
 }
 
 #[cfg(test)]
