@@ -86,6 +86,7 @@ impl PlayerMotion {
             sync_velocity: &mut h.sync_velocity,
             game_time: h.game_time,
             events: &mut self.events,
+            status: self.status.clone(),
         };
         h.food.tick(&mut world)
     }
@@ -105,6 +106,10 @@ struct TickWorld<'a> {
     sync_velocity: &'a mut bool,
     game_time: i64,
     events: &'a mut Vec<MotionEvent>,
+    /// Resistance, fire resistance and armor protection (effects.rs): the
+    /// starvation hurt is a `LivingEntity.hurtServer` like any other, so its
+    /// `onMobHurt` (Infested) and magic absorb see them.
+    status: crate::effects::StatusFlags,
 }
 impl FoodWorld for TickWorld<'_> {
     type Error = Box<dyn std::error::Error>;
@@ -180,7 +185,7 @@ impl FoodWorld for TickWorld<'_> {
             dead: self.dead,
             sync_velocity: self.sync_velocity,
             game_time: self.game_time,
-            status: Default::default(),
+            status: self.status.clone(),
             blocking: None,
             blocked: 0.0,
             blocking_item_used: false,

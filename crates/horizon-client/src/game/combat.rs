@@ -6,6 +6,9 @@ use super::{Game, commands::Target};
 #[cfg(test)]
 use super::commands;
 #[cfg(test)]
+#[path = "infested_roll_tests.rs"]
+mod infested_roll_tests;
+#[cfg(test)]
 #[path = "revenge_home_tests.rs"]
 mod revenge_home_tests;
 #[cfg(test)]
@@ -376,6 +379,13 @@ impl Game<'_> {
     pub(super) fn record_combat(&mut self, events: &[MotionEvent]) {
         self.recheck_combat();
         for e in events {
+            // `LivingEntity.hurtServer` ends with the effects' `onMobHurt`,
+            // whatever `actuallyHurt` made of the hit: a hit absorption or
+            // armor takes whole still rolls the Infested chance.
+            if matches!(e, MotionEvent::Health(HealthEvent::MobHurt)) {
+                self.player_infested();
+                continue;
+            }
             let (name, amount) = match e {
                 // LivingEntity.getDamageAfterMagicAbsorb (Resistance) and
                 // Player.actuallyHurt (absorption hearts) and
@@ -446,10 +456,6 @@ impl Game<'_> {
                 direct,
             });
             self.combat.last_damage = now;
-            // InfestedMobEffect.onMobHurt.
-            if self.potions.effects.get("infested").is_some() {
-                self.player_infested();
-            }
         }
         self.combat.pending.clear();
         self.combat.pending_direct.clear();
