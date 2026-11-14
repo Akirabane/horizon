@@ -7749,9 +7749,7 @@ impl Game<'_> {
             .filter(|s| s.name.ends_with("cauldron"))
             .cloned()?;
         let above = self.world.block(pos[0], pos[1] + 1, pos[2]);
-        let under_water = registry
-            .state(above)
-            .is_some_and(|s| s.name == "minecraft:water");
+        let under_water = cauldrons::is_under_water(self.res.facts(), above);
         Some((state, under_water))
     }
     /// What `BlockTransformer.transformBlock` would do with a held axe, hoe
@@ -7982,7 +7980,7 @@ impl Game<'_> {
                 return Ok(UseResult::Pass);
             };
             // `BucketItem.use`: `level.mayInteract` and `mayUseItemAt`.
-            if !self.may_build() && !self.can_place_on_in_adventure(hit.pos) {
+            if self.bucket_use_refused(hit.pos) {
                 return Ok(UseResult::Fail);
             }
             let mut canceled = false;
@@ -8033,7 +8031,7 @@ impl Game<'_> {
         };
         let clicked = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
         if let Some((content, sound, mob)) = bucket {
-            if !self.may_build() && !self.can_place_on_in_adventure(hit.pos) {
+            if self.bucket_use_refused(hit.pos) {
                 return Ok(UseResult::Fail);
             }
             let target = self.bucket_target(content, &hit);
@@ -8107,15 +8105,13 @@ impl Game<'_> {
                 );
             }
             self.trigger_block("minecraft:placed_block", target, stack);
-            if !self.creative {
-                *self.held_mut() = Some(ItemStack::new("minecraft:bucket", 1));
-            }
+            self.bucket_emptied(&stack.item);
             return Ok(UseResult::Success { swing: true });
         }
-        if self.use_block_transformer(stack, hit.pos, hit.face)? {
+        if self.may_use_on(hit.pos) && self.use_block_transformer(stack, hit.pos, hit.face)? {
             return Ok(UseResult::Success { swing: true });
         }
-        if item == "honeycomb" {
+        if self.may_use_on(hit.pos) && item == "honeycomb" {
             let registry = self.pack.assets.registry;
             let old = registry.state(clicked);
             if let Some(waxed) = old.and_then(|old| self.res.transformers().waxed(registry, old))
@@ -8597,7 +8593,7 @@ impl Game<'_> {
             self.snap_player_model_pitch();
         }
         self.occupy_bed(head);
-        self.award_custom_stat("sleep_in_bed", 1);
+        self.award_custom_stat(self.slept_in_bed_stat(state), 1);
         self.trigger_player("minecraft:slept_in_bed");
         self.stats.reset("custom", "minecraft:time_since_rest");
     }
@@ -12494,13 +12490,13 @@ fn reset_world_progress(adv: &mut advancements::AdvState, stats: &mut stats::Sta
 }
 
 #[cfg(test)]
-mod startup_cpu_tests;
-
+mod entity_model_loading_tests;
+#[cfg(test)]
+mod player_kill_credit_tests;
 #[cfg(test)]
 mod runtime_reset_tests;
-
 #[cfg(test)]
-mod entity_model_loading_tests;
+mod startup_cpu_tests;
 
 /// `LocalPlayer.moveTowardsClosestSpace` at the body's four corners (aiStep, unless a spectator or a
 /// passenger): a corner inside a suffocating block sets a 0.1 speed towards the nearest side that is
@@ -12623,6 +12619,8 @@ struct LandingVibration {
 }
 #[cfg(test)]
 mod allay_pickup_cooldown_tests;
+#[cfg(test)]
+mod cauldron_underwater_tests;
 #[cfg(test)]
 mod dragon_fireball_motion_tests;
 #[cfg(test)]
