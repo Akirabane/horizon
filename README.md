@@ -46,9 +46,7 @@
 </table>
 
 <p align="center">
-  <img src="docs/media/readme/sign-start.png" alt="A wooden sign: 3.5x faster start than modded Java" width="260">
-  <img src="docs/media/readme/sign-fps.png" alt="A wooden sign: 38 percent more FPS than Java with Sodium" width="260">
-  <img src="docs/media/readme/sign-mods.png" alt="A wooden sign: mod API, port your mods to Rust" width="260">
+  <img src="docs/media/readme/signs-row.webp" alt="A voxel dragon in welding goggles points at three wooden signs: 3.5x faster start than modded Java, 38 percent more FPS than Java with Sodium, and a mod API to port your mods to Rust" width="100%">
 </p>
 
 <p align="center">
