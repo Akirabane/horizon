@@ -1596,7 +1596,17 @@ impl Mob {
         }
     }
     /// LivingEntity.travel.
-    pub fn travel(&mut self, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) {
+    pub fn travel(&mut self, w: &MobWorld, mut input: Vec3, events: &mut Vec<MobEvent>) {
+        // Camel.travel: on the ground, a camel that sits or changes pose keeps
+        // the vertical part of its motion and drops the horizontal input.
+        if super::camel::is_camel(self.species())
+            && self.on_ground
+            && super::camel::refuse_to_move(self)
+        {
+            let vertical = Vec3::new(0.0, 1.0, 0.0);
+            self.velocity = self.velocity.multiply(vertical);
+            input = input.multiply(vertical);
+        }
         if super::ai::custom_travel(self, w, input, events) {
             return;
         }
