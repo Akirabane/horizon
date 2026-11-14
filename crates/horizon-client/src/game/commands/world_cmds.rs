@@ -1133,7 +1133,7 @@ impl Game<'_> {
                     "attribute.modifier.add" => {
                         if player
                             .attributes
-                            .has_modifier(Some(key), &modifier_id)
+                            .has_modifier(Some(key.clone()), &modifier_id)
                             .unwrap_or(false)
                         {
                             return Err(text_error(
@@ -1148,11 +1148,39 @@ impl Game<'_> {
                         let op = ctx
                             .literals
                             .last()
-                            .cloned()
-                            .unwrap_or_else(|| "add_value".into());
+                            .map(String::as_str)
+                            .unwrap_or("add_value");
+                        let operation = match op {
+                            "add_multiplied_base" => {
+                                horizon_world::attributes::Operation::AddMultipliedBase
+                            }
+                            "add_multiplied_total" => {
+                                horizon_world::attributes::Operation::AddMultipliedTotal
+                            }
+                            _ => horizon_world::attributes::Operation::AddValue,
+                        };
+                        // AttributeInstance.addPermanentModifier: unlike equipment's
+                        // transient modifiers, this one is in AttributeInstance.pack.
+                        let modifier = horizon_world::attributes::Modifier::new(
+                            &modifier_id,
+                            value_arg,
+                            operation,
+                        )
+                        .map_err(|_| no_attribute(&name, &description))?;
+                        let handle = player
+                            .attributes
+                            .get_instance(Some(key))
+                            .map_err(|_| no_attribute(&name, &description))?
+                            .ok_or_else(|| no_attribute(&name, &description))?;
                         player
-                            .set_modifier(attribute, &modifier_id, value_arg, &op, true)
+                            .attributes
+                            .edit(&handle, |value, observer| {
+                                value.add_permanent(modifier, observer)
+                            })
                             .map_err(|_| no_attribute(&name, &description))?;
+                        if attribute == "minecraft:max_health" {
+                            let _ = player.clamp_health_to_max();
+                        }
                         Ok(Some((
                             1,
                             Text::translate(
@@ -2813,6 +2841,109 @@ mod vehicle_damage_command_tests {
                     );
                 }
             }
+        });
+    }
+}
+
+#[cfg(test)]
+mod attribute_modifier_command_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::chunk::Chunk;
+    use horizon_client::motion::PlayerMotion;
+    use horizon_client_core::nbt_value::text;
+    use horizon_core::geometry::Vec3;
+    use horizon_core::position::ChunkPos;
+    use horizon_world::nbt::Tag;
+    use std::sync::Arc;
+
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap()).join(format!(
+                "attribute-modifier-{:?}",
+                std::thread::current().id()
+            )),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("difficulty normal"));
+        assert!(game.run_command("forceload add 0 0"));
+        test(&mut game);
+    }
+
+    /// `AttributeCommand.addModifier` uses `AttributeInstance.addPermanentModifier`;
+    /// `AttributeInstance.pack` saves only permanent modifiers. A command
+    /// modifier must therefore be in the player's saved list and survive a reload.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_command_modifier_is_saved_with_the_player() {
+        with_game(|game| {
+            game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
+            assert!(game.run_command(
+                "attribute @s minecraft:step_height modifier add test:a 0.4 add_value"
+            ));
+            assert_eq!(
+                game.player
+                    .as_mut()
+                    .unwrap()
+                    .attribute("minecraft:step_height")
+                    .unwrap(),
+                1.0
+            );
+            let saved = game.player.as_ref().unwrap().saved_attributes();
+            let holds = match &saved {
+                Tag::List(instances) => instances.iter().any(|entry| {
+                    text(entry.get("id")).as_deref() == Some("minecraft:step_height")
+                        && matches!(
+                            entry.get("modifiers"),
+                            Some(Tag::List(modifiers))
+                                if modifiers
+                                    .iter()
+                                    .any(|m| text(m.get("id")).as_deref() == Some("test:a"))
+                        )
+                }),
+                _ => false,
+            };
+            assert!(holds, "saved attributes: {saved:?}");
+            let mut back = PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
+            back.apply_saved_attributes(Some(&saved)).unwrap();
+            assert_eq!(
+                back.attribute("minecraft:step_height").unwrap(),
+                1.0,
+                "saved attributes: {saved:?}"
+            );
         });
     }
 }
