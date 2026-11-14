@@ -496,7 +496,7 @@ impl Game<'_> {
             }
         }
         for (radius, knockback) in bursts {
-            let _ = self.wind_burst(feet, radius, knockback, false, false);
+            let _ = self.wind_burst(feet, radius, knockback, super::wind::Source::WIND_BURST);
         }
     }
     /// `EnchantmentHelper.doPostAttackEffects`' `VICTIM` loop after the mob
