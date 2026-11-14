@@ -15,6 +15,7 @@ use horizon_client::{
     hud::HudBatch,
     items::ItemStack,
     merchant::{self, MerchantOffer, TradeContext},
+    text::Text,
     widgets::{Cursor, request_cursor},
 };
 
@@ -35,7 +36,43 @@ pub(super) struct MerchantState {
     /// The trading mob (its offers and experience are written back on
     /// close) and its custom name.
     pub(super) mob: Option<u32>,
-    pub(super) name: Option<String>,
+    /// `Merchant.getDisplayName()`: the trading mob's custom name with its
+    /// style, else nothing (the profession's name is the default).
+    pub(super) name: Option<Text>,
+}
+/// `Merchant.getDisplayName`: the merchant's custom name (style and all), else
+/// the profession's or the wandering trader's.
+pub(super) fn merchant_display_name(
+    progress: bool,
+    profession: &str,
+    custom: Option<Text>,
+) -> Text {
+    custom.unwrap_or_else(|| {
+        if progress {
+            Text::translate_with_fallback(
+                &format!("entity.minecraft.villager.{profession}"),
+                profession,
+                &[],
+            )
+        } else {
+            Text::translate_with_fallback(
+                "entity.minecraft.wandering_trader",
+                "Wandering Trader",
+                &[],
+            )
+        }
+    })
+}
+/// `MerchantScreen.extractLabels`: a villager's title is `merchant.title` with
+/// the name and its level, so the name keeps the style it was given.
+pub(super) fn merchant_title(progress: bool, level: i32, name: Text) -> Text {
+    // `extractLabels` joins the level for levels 1 to 5 only (`VillagerData`
+    // clamps a villager to 1; a level past 5 draws the name alone).
+    if !progress || !(1..=5).contains(&level) {
+        return name;
+    }
+    let level = Text::translate_with_fallback(&format!("merchant.level.{level}"), "", &[]);
+    Text::translate_with_fallback("merchant.title", "%s - %s", &[name, level])
 }
 impl MerchantState {
     /// `Merchant.showProgressBar`: villagers only.
@@ -286,7 +323,14 @@ impl Game<'_> {
         session.random.clone_from(&m.random);
         session.origin = [m.position.x, m.position.y, m.position.z];
         session.ambient_sound_time = m.ambient_timer;
-        let (id, name) = (m.id, m.custom_name.clone());
+        let (id, name) = (
+            m.id,
+            m.custom_name.as_ref().map(|plain| {
+                m.custom_name_text
+                    .clone()
+                    .unwrap_or_else(|| Text::literal(plain))
+            }),
+        );
         if villager {
             session.reputation = self.villager_reputation(id);
             session.hero = self.hero_amplifier();
@@ -366,11 +410,7 @@ impl Game<'_> {
         });
     }
     /// A server's trading window (no mob here: the server keeps it).
-    pub(super) fn open_remote_merchant(
-        &mut self,
-        session: merchant::Session,
-        name: Option<String>,
-    ) {
+    pub(super) fn open_remote_merchant(&mut self, session: merchant::Session, name: Option<Text>) {
         self.open_merchant_state(MerchantState {
             session: Box::new(session),
             scroll: 0,
@@ -639,27 +679,13 @@ impl Game<'_> {
             batch.rect_uv(ox + SHIFT, oy, 276.0, 166.0, r, u32::MAX);
         }
         let tr = |k: &str, f: &str| horizon_client::lang::get_or(k, f);
-        let name = custom.unwrap_or_else(|| {
-            if progress {
-                tr(
-                    &format!("entity.minecraft.villager.{profession}"),
-                    &profession,
-                )
-            } else {
-                tr("entity.minecraft.wandering_trader", "Wandering Trader")
-            }
-        });
+        let name = merchant_display_name(progress, &profession, custom);
         // The screen's title is the merchant's name; its label adds the level.
-        super::screen_info::name_container(|| name.clone());
-        let title = if progress {
-            tr("merchant.title", "%s - %s")
-                .replacen("%s", &name, 1)
-                .replacen("%s", &tr(&format!("merchant.level.{level}"), ""), 1)
-        } else {
-            name
-        };
-        let tw = HudBatch::text_width(atlas, &title);
-        batch.text(
+        super::screen_info::name_container(|| name.plain());
+        // `StringDecomposer.iterateFormatted`: `§` codes a name holds apply at draw time.
+        let title = merchant_title(progress, level, name).resolve_legacy();
+        let tw = atlas.font.width_text(&title);
+        batch.text_styled(
             atlas,
             &title,
             ox + SHIFT + (49.0 + 138.0 - (tw / 2.0).floor()),
