@@ -8131,7 +8131,7 @@ impl Game<'_> {
                 pos: hit.pos,
                 face: i32::from(face_direction(hit.face)),
                 cursor,
-                inside: hit.face == [0; 3],
+                inside: hit.inside,
                 world_border: false,
                 sequence: seq,
             }));
@@ -8583,7 +8583,7 @@ impl Game<'_> {
             clicked_pos: horizon_core::position::BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
             face: horizon_core::geometry::Direction::ALL[face_direction(hit.face) as usize],
             hit: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
-            inside: hit.face == [0; 3],
+            inside: hit.inside,
             yaw: self.yaw,
             pitch: self.pitch,
             sneaking: self.remote_shift_down(),
@@ -11702,6 +11702,7 @@ mod tests {
                 pos,
                 face: [0, 1, 0],
                 point: [f64::from(pos[0]) + 0.5, 70.0, 0.5],
+                inside: false,
             };
             let stack = ItemStack::new(name, 2);
             assert_eq!(game.items().get(name).unwrap().block, Some(target));
@@ -11724,6 +11725,7 @@ mod tests {
             pos: [0, 70, 0],
             face: [0, 1, 0],
             point: [0.5, 71.0, 0.5],
+            inside: false,
         };
         game.set_mode_id(2);
         let before = game.held().cloned();
@@ -13345,6 +13347,7 @@ mod tests {
             pos: [0, 63, 0],
             face: [0, 1, 0],
             point: [0.5, 64.0, 0.5],
+            inside: false,
         });
 
         let done = game.remote_use_block(Hand::Main);
