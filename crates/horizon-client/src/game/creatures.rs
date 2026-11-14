@@ -4018,11 +4018,10 @@ impl Game<'_> {
             // the armor value, so a piece that breaks on this hit takes no
             // part in the reduction of the hit that broke it (#11696). The
             // hit's own advancement keeps the helmet phase's reported amount.
-            let damages_helmet = self
-                .health_resources
-                .damage
-                .in_tag(id, "minecraft:damages_helmet");
-            self.hurt_player_equipment(id, amount, blocking, living_cause, causing)
+            let catalog = &self.health_resources.damage;
+            let damages_helmet = catalog.in_tag(id, "minecraft:damages_helmet");
+            let weapon = self.player_armor_weapon(attacker, projectile);
+            self.hurt_player_equipment(id, amount, blocking, living_cause, causing, weapon)
                 .map(|(outcome, actual)| {
                     if damages_helmet {
                         resolved_damage = Some(actual);
@@ -4189,7 +4188,7 @@ impl Game<'_> {
         let mut canceled = false;
         if !self.creative
             && let Some(id) = self.health_resources.damage.id(damage_type)
-            && let Ok((o, _)) = self.hurt_player_equipment(id, amount, None, false, 0)
+            && let Ok((o, _)) = self.hurt_player_equipment(id, amount, None, false, 0, None)
         {
             canceled = o.canceled;
         }
