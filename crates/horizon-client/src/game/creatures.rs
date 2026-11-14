@@ -5,10 +5,12 @@
 mod bred_draws;
 mod effect_instance;
 use effect_instance::mob_effect_instance;
+pub(super) mod biome_facts;
+mod mob_conversion;
 mod mob_geometry;
 mod mob_group;
 mod mob_islands;
-mod prep;
+pub(super) mod prep;
 mod projectile_targets;
 mod projectile_world;
 mod pufferfish_player;
@@ -33,7 +35,6 @@ use horizon_client::{
     mobs::{
         Damage, DamageKind, Mob, MobEvent, MobWorld, PlayerView, Seen, SpawnSetup, Species, Who,
         ai::{eating_sound, feed_animal, takes_food},
-        farm::Climate,
         spawning::{self, BiomeFacts},
     },
     mod_api::NativeLootDrops,
@@ -192,7 +193,7 @@ fn pickable_projectile_hitboxes_into(
 
 /// `ServerLevel.getCurrentDifficultyAt`, reading only the world: also on the mob tick's helper
 /// threads.
-fn difficulty_reader(
+pub(super) fn difficulty_reader(
     world: &horizon_client::world::World,
 ) -> impl Fn([f64; 3]) -> spawning::LocalDifficulty + Sync + '_ {
     move |at| {
@@ -488,42 +489,14 @@ impl Game<'_> {
     }
     /// Biome facts at a position for finalizeSpawn and variant rules.
     pub(super) fn biome_facts(&self, x: i32, y: i32, z: i32) -> BiomeFacts {
-        let Some(chunk) = self.world.chunks.get(&(x >> 4, z >> 4)) else {
-            return BiomeFacts::default();
-        };
-        let b = world_biomes!(self).get(chunk.biome(x, y, z));
-        let tags = self.res.mob_data();
-        let has = |t: &str| tags.biome_has(t, &b.name);
-        let climate = if has("minecraft:spawns_warm_variant_farm_animals") {
-            Climate::Warm
-        } else if has("minecraft:spawns_cold_variant_farm_animals") {
-            Climate::Cold
-        } else {
-            Climate::Temperate
-        };
-        BiomeFacts {
-            coral_nautilus: has("minecraft:spawns_coral_variant_zombie_nautilus"),
-            climate,
-            temperature: b.temperature,
-            snowy: has("minecraft:spawns_snow_foxes")
-                || b.name.contains("snow")
-                || b.name.contains("frozen"),
-            snow_fox: has("minecraft:spawns_snow_foxes"),
-            swamp: b.name.contains("swamp"),
-            ocean: has("minecraft:is_ocean"),
-            mushroom: b.name == "minecraft:mushroom_fields",
-            desert: b.name == "minecraft:desert",
-            jungle: has("minecraft:is_jungle"),
-            wolf: horizon_client::mobs::tame::wolf_variant_for(&b.name, &has),
-            full_moon: (self.world.day_time / 24000).rem_euclid(8) == 0,
-            frog: if has("minecraft:spawns_warm_variant_frogs") {
-                1
-            } else if has("minecraft:spawns_cold_variant_frogs") {
-                2
-            } else {
-                0
-            },
-        }
+        biome_facts::biome_facts_in(
+            &self.world,
+            world_biomes!(self),
+            self.res.mob_data(),
+            x,
+            y,
+            z,
+        )
     }
     /// Create a mob of `kind` at a position, finalized like a natural spawn.
     pub(super) fn spawn_mob(&mut self, kind: &str, at: [f64; 3], persistent: bool) -> Option<u32> {
@@ -844,8 +817,8 @@ impl Game<'_> {
             self.lan_entity_event(id as i32, event, at);
         }
     }
-    /// What a converted frog gets once its tadpole has grown up: the spawn
-    /// finalization of a conversion, then persistence.
+    /// What `Villager.thunderHit`'s and `Tadpole.ageUp`'s after-step gives the
+    /// new mob: the spawn finalization of a conversion, then persistence.
     fn finalize_converted(&mut self, id: u32) {
         let Some(at) = self.mobs.iter().find(|m| m.id == id).map(|m| m.position) else {
             return;
@@ -858,6 +831,8 @@ impl Game<'_> {
         let difficulty = self.local_difficulty([at.x, at.y, at.z]);
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             spawning::finalize(m, &facts, &difficulty);
+            // `Raider.finalizeSpawn`, which the witch's conversion reaches too.
+            horizon_client::mobs::raider::finalize(m, horizon_client::mobs::raider::Reason::Other);
             m.persistent = true;
         }
     }
@@ -866,19 +841,24 @@ impl Game<'_> {
     /// its place with what `conversion::single` carries over, and the old
     /// mob's riders move onto it. A zombie that comes out of it rolls
     /// `Zombie.handleAttributes(special, CONVERSION)` (the
-    /// `postConversionStep` of its `ConversionTracker`).
+    /// `postConversionStep` of its `ConversionTracker`). `pre_checked` skips
+    /// `LivingConversionEvent.Pre`, which the lightning asks before it picks
+    /// its outcome.
     pub(super) fn convert_to(
         &mut self,
         from: &Mob,
         kind: &str,
         params: horizon_client::mobs::conversion::Params,
+        pre_checked: bool,
     ) -> Option<u32> {
         let t = self.res.mob_types().get(kind).cloned()?;
         // LivingConversionEvent.Pre: the caller already marked the mob removed,
         // so a canceled conversion puts it back as it was.
         let mut cancel = false;
         let from_kind = super::native_hooks::mob_kind(from);
-        self.native_living_conversion_pre(from.id, &from_kind, kind, &mut cancel);
+        if !pre_checked {
+            self.native_living_conversion_pre(from.id, &from_kind, kind, &mut cancel);
+        }
         if cancel {
             match self.mobs.iter_mut().find(|m| m.id == from.id) {
                 Some(kept) => kept.removed = false,
@@ -2875,23 +2855,12 @@ impl Game<'_> {
                         self.apply_setup(id, &setup);
                     }
                 }
-                MobEvent::Convert { from, kind, params } => {
-                    let id = self.convert_to(&from, kind, params);
-                    // `Piglin.finishConversion` and `Hoglin.finishConversion`:
-                    // the converted mob is nauseous for 10 seconds.
-                    if matches!(kind, "minecraft:zombified_piglin" | "minecraft:zoglin")
-                        && let Some(m) = self.mobs.iter_mut().find(|m| Some(m.id) == id)
-                    {
-                        m.add_effect("minecraft:nausea", 200, 0);
-                    }
-                    // `Tadpole.ageUp`: the frog is finalized for the
-                    // conversion and made persistent.
-                    if kind == "minecraft:frog"
-                        && let Some(id) = id
-                    {
-                        self.finalize_converted(id);
-                    }
-                }
+                MobEvent::Convert {
+                    mut from,
+                    kind,
+                    params,
+                    after,
+                } => self.convert_event(&mut from, kind, params, after),
                 MobEvent::ThrowItem {
                     mob,
                     stack,
@@ -3660,6 +3629,8 @@ impl Game<'_> {
             return;
         }
         let coin = self.bred_coat_coin(parent, p.species());
+        // The baby's variant; a rabbit draws its own (Rabbit.getBreedOffspring).
+        let offspring_variant = self.bred_offspring_variant(parent, &p, q.as_ref(), coin);
         // Axolotl.getBreedOffspring: useRareVariant (one in 1200) makes it blue,
         // else either parent's variant. The draws come from the mother's random.
         let axolotl = if p.species() == Species::Axolotl {
@@ -3849,16 +3820,8 @@ impl Game<'_> {
                 child.extra.owner = p.extra.owner;
                 child.persistent = true;
             }
-            // Offspring inherit a parent's variant (pigs/cows/chickens) or mixed wool.
-            child.extra.variant = p.extra.variant;
-            // Fox, Pig, Cow and Chicken.getBreedOffspring: either parent's variant.
-            if matches!(
-                p.species(),
-                Species::Fox | Species::Pig | Species::Cow | Species::Chicken
-            ) && !coin
-            {
-                child.extra.variant = q.as_ref().map_or(p.extra.variant, |q| q.extra.variant);
-            }
+            // A parent's variant, or the rabbit's own draw above.
+            child.extra.variant = offspring_variant;
             if let Some(variant) = mooshroom {
                 child.extra.variant = variant;
             }
@@ -6400,8 +6363,7 @@ impl Game<'_> {
                 } else {
                     "minecraft:red_mushroom"
                 };
-                drops.push((mushroom.into(), 5));
-                shear_puff = Some((feet, f64::from(m.height())));
+                let height = f64::from(m.height());
                 self.audio.play_bound(
                     "minecraft:entity.mooshroom.shear",
                     7,
@@ -6411,18 +6373,13 @@ impl Game<'_> {
                     None,
                 );
                 m.removed = true;
-                let setup = SpawnSetup {
-                    yaw: m.yaw,
-                    persistent: true,
-                    skip_finalize: true,
-                    ..Default::default()
-                };
-                let pos = [m.position.x, m.position.y, m.position.z];
-                self.handle_mob_events(vec![MobEvent::SpawnKind {
-                    kind: "minecraft:cow".into(),
-                    at: pos,
-                    setup,
-                }])?;
+                let from = m.clone();
+                // `MushroomCow.shear`: the puff and the mushrooms are the
+                // conversion's after-step, so a canceled one drops nothing.
+                if self.convert_mooshroom(&from) {
+                    drops.push((mushroom.into(), 5));
+                    shear_puff = Some((feet, height));
+                }
                 let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
                 self.post_game_event("minecraft:shear", feet, ctx);
                 self.damage_held_tool();
@@ -8403,6 +8360,7 @@ mod conversion_tag_tests {
                     &source,
                     &format!("minecraft:{to}"),
                     horizon_client::mobs::conversion::Params::KEEP_ALL,
+                    false,
                 )
                 .unwrap();
             assert_ne!(old_id, new_id);
@@ -8519,6 +8477,10 @@ mod pickable_projectile_tests {
 #[cfg(test)]
 #[path = "breeding_orb_tests.rs"]
 mod breeding_orb_tests;
+
+#[cfg(test)]
+#[path = "rabbit_colour_tests.rs"]
+mod rabbit_colour_tests;
 
 #[cfg(test)]
 mod chorus_projectile_drop_tests {
