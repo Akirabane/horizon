@@ -207,6 +207,9 @@ impl Game<'_> {
         let aim = self.attacker_aim(source.attacker);
         let kind = self.mobs[index].kind.id.clone();
         let mut amount = amount;
+        // `DamageSource.isCreativePlayer()`: a creative player's hit is let through
+        // `Entity.isInvulnerableToBase`.
+        self.mobs[index].creative_attacker = self.creative;
         // After the invulnerability guard, as `LivingIncomingDamageEvent` fires.
         if !crate::mod_api::mods().is_empty() && !self.mobs[index].refuses_damage(&source) {
             let victim = &self.mobs[index];
@@ -226,6 +229,9 @@ impl Game<'_> {
                 &mut canceled,
             );
             if canceled {
+                // The flag must not outlive the blow: a later hit from a source that is not
+                // the creative player would otherwise pass `isInvulnerableToBase`.
+                self.mobs[index].creative_attacker = false;
                 return false;
             }
         }
@@ -269,6 +275,7 @@ impl Game<'_> {
             None => self.mobs[index].damage_with(amount, source, Some(&mut breach)),
         };
         self.mobs[index].attacker_aim = None;
+        self.mobs[index].creative_attacker = false;
         // LivingEntity.actuallyHurt: Stats.DAMAGE_DEALT_ABSORBED for the attacking player,
         // awarded here, during that player's own attack (a server's guest has its own
         // statistics only inside `as_guest`).
