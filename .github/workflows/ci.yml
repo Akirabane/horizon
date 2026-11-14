@@ -218,13 +218,11 @@ jobs:
           [ "$TESTED" = true ] || cargo +stable fmt --all -- --check
           cargo +stable clippy --workspace --all-targets --locked -- -D warnings
       # The server build (released as horizon-engine): the game without sound or controllers. Its libraries and
-      # binaries, not the tests and examples the first clippy already checked. A pull request runs it only when it
-      # changes a client crate or a manifest (rust_changes.py's server_build); main's pushes and the merge queue always
-      # do, so a change that breaks it alone stops in the queue.
+      # binaries, not the tests and examples the first clippy already checked. Every pull request runs it: the merge
+      # queue no longer runs this job, so a change that breaks only the server build must stop on its own pull request
+      # (a crate below the client can break it without touching one).
       - name: Lint the server build
-        if: >-
-          steps.rust.outputs.required != 'false' &&
-          (github.event_name != 'pull_request' || steps.rust.outputs.server_build != 'false')
+        if: steps.rust.outputs.required != 'false'
         run: cargo +stable clippy -p horizon-client --lib --bins --locked --no-default-features -- -D warnings
       # Only main's passing run records its commit; pull requests restore it and never save it.
       - name: Record the commit this lint cache was checked at
