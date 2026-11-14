@@ -2734,7 +2734,7 @@ impl Game<'_> {
             return Err(err("commands.setblock.failed", &[]));
         }
         let current = self.world.block(pos[0], pos[1], pos[2]);
-        if ctx.has("keep") && current != self.world.air {
+        if ctx.has("keep") && !self.res.facts().is_air(current) {
             return Err(err("commands.setblock.failed", &[]));
         }
         // SetBlockCommand.setBlock skips placement when destruction already
@@ -2971,7 +2971,6 @@ impl Game<'_> {
             return Err(err("commands.fill.failed", &[]));
         }
         let state = self.block_state(&block)?;
-        let air = self.world.air;
         let (hollow, outline, destroy, strict, keep) = (
             ctx.has("hollow"),
             ctx.has("outline"),
@@ -2998,7 +2997,7 @@ impl Game<'_> {
             for z in min[2]..=max[2] {
                 for x in min[0]..=max[0] {
                     let current = self.world.block(x, y, z);
-                    if keep && current != air {
+                    if keep && !self.res.facts().is_air(current) {
                         continue;
                     }
                     // Already the block it would become: nothing to place (place_state would do nothing either).
@@ -3032,7 +3031,7 @@ impl Game<'_> {
                         || z == min[2]
                         || z == max[2];
                     let mut affected = false;
-                    if destroy && current != air {
+                    if destroy && !self.res.facts().is_air(current) {
                         self.destroy_block_dropping([x, y, z])?;
                         affected = true;
                     }
@@ -3044,7 +3043,7 @@ impl Game<'_> {
                             }
                             continue;
                         }
-                        air
+                        self.world.air
                     } else {
                         state
                     };
@@ -3222,7 +3221,6 @@ impl Game<'_> {
             Some(Arg::Block(f)) => Some(f.clone()),
             _ => None,
         };
-        let air = self.world.air;
         let masked = ctx.has("masked");
         self.clone_enter(from_dim)?;
         let mut copies = Vec::new();
@@ -3230,7 +3228,7 @@ impl Game<'_> {
             for z in min[2]..=max[2] {
                 for x in min[0]..=max[0] {
                     let s = self.world.block(x, y, z);
-                    if masked && s == air {
+                    if masked && self.res.facts().is_air(s) {
                         continue;
                     }
                     if let Some(f) = &filter
@@ -3254,7 +3252,7 @@ impl Game<'_> {
         }
         if moving {
             for (from, ..) in &copies {
-                self.place_state(*from, air, true, false)?;
+                self.place_state(*from, self.world.air, true, false)?;
             }
         }
         self.clone_enter(to_dim)?;
@@ -4453,6 +4451,8 @@ fn difficulty_names(from: u8, to: u8) -> (&'static str, &'static str) {
     )
 }
 
+#[cfg(test)]
+mod air_filter_tests;
 #[cfg(test)]
 mod teleport_pitch_tests {
     #[test]
