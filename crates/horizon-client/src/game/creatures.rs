@@ -7367,22 +7367,6 @@ fn bucketable(species: Species) -> Option<(&'static str, &'static str)> {
 pub(super) fn source_damage_type(d: Damage) -> &'static str {
     damage_type(d.kind, d.attacker.is_some())
 }
-/// Whether the causing entity deals `kind` itself, so it is the source's
-/// direct entity too: a melee hit (`DamageSources.mobAttack`, `playerAttack`,
-/// a mace's or a spear's), a sting, a sonic boom, thorns.
-pub(super) fn melee(kind: horizon_client::mobs::DamageKind) -> bool {
-    use horizon_client::mobs::DamageKind as K;
-    matches!(
-        kind,
-        K::PlayerAttack
-            | K::MaceSmash
-            | K::Spear
-            | K::MobAttack
-            | K::Sting
-            | K::SonicBoom
-            | K::Thorns
-    )
-}
 /// The damage type id of a Horizon damage kind. `caused`: the source has a
 /// causing entity (only a blast asks).
 pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) -> &'static str {
@@ -7393,6 +7377,7 @@ pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) 
         K::MaceSmash => "minecraft:mace_smash",
         K::Spear => "minecraft:spear",
         K::MobAttack => "minecraft:mob_attack",
+        K::MobAttackNoAggro => "minecraft:mob_attack_no_aggro",
         K::Arrow => "minecraft:arrow",
         K::Thrown => "minecraft:thrown",
         K::Fireball => "minecraft:fireball",
