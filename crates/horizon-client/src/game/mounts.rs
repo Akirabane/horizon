@@ -40,20 +40,6 @@ pub(super) fn steering_item(species: Species, main: Option<&str>, offhand: Optio
     main == Some(item) || offhand == Some(item)
 }
 
-/// `passengerAttachments` minus the player's 0.6 vehicle attachment.
-fn seat(s: Species) -> f64 {
-    let attach = match s {
-        Species::Pig => 0.86875,
-        Species::Strider => 1.7,
-        Species::Horse => 1.44375,
-        Species::Llama | Species::TraderLlama => 1.37,
-        Species::Donkey => 1.1125,
-        Species::Mule => 1.2125,
-        Species::Nautilus | Species::ZombieNautilus => 1.1375,
-        _ => 1.31875,
-    };
-    attach - 0.6
-}
 #[derive(Default)]
 pub(super) struct MountState {
     /// `jumpRidingTicks`: -10 cooling down after a jump, >= 0 charging.
@@ -130,6 +116,24 @@ pub(super) fn dismounts_underwater(species: Species) -> bool {
             | Species::Strider
             | Species::TraderLlama
             | Species::ZombieHorse
+    )
+}
+
+/// `EntityAttachments.transformPoint`: `Vec3.yRot(-yRot * (float) (Math.PI / 180.0))`,
+/// an attachment point turned with the vehicle.
+fn turned(a: [f64; 3], yaw: f32) -> Vec3 {
+    Vec3::new(a[0], a[1], a[2]).rotate_y(-yaw * (std::f64::consts::PI / 180.0) as f32)
+}
+
+/// `Entity.getPassengerRidingPosition` for a player on `m`: the vehicle's
+/// attachment point, turned with it, less the player's own vehicle attachment
+/// (`Avatar.DEFAULT_VEHICLE_ATTACHMENT`, a `Vec3(0.0, 0.6, 0.0)` of doubles).
+fn seat_of(m: &horizon_client::mobs::Mob, attachment: [f64; 3]) -> Vec3 {
+    let at = turned(attachment, m.yaw);
+    Vec3::new(
+        m.position.x + at.x,
+        m.position.y + at.y - 0.6,
+        m.position.z + at.z,
     )
 }
 
@@ -666,60 +670,29 @@ impl Game<'_> {
             return;
         };
         let m = &self.mobs[i];
-        let mut at = Vec3::new(m.position.x, m.position.y + seat(m.species()), m.position.z);
-        if &*m.kind.id == "minecraft:player" || &*m.kind.id == "minecraft:mannequin" {
-            // Avatar attachments follow pose and minecraft:scale, just as for
-            // remote avatars riding other avatars. Do not guess a standing height.
-            at = horizon_client::mobs::riders::seat(
-                horizon_client::mobs::riders::passenger_attachment(m),
-                f64::from(0.6_f32),
-                m.position,
-                m.yaw,
-            );
-        } else if horizon_client::mobs::camel::is_camel(m.species()) {
+        // `Entity.getPassengerRidingPosition`: the vehicle type's own passenger
+        // attachment (`EntityAttachments`, `getClamped(PASSENGER, 0, yRot)`),
+        // turned with the vehicle, less the player's own vehicle attachment
+        // (`Avatar.DEFAULT_VEHICLE_ATTACHMENT`).
+        let mut at = if horizon_client::mobs::camel::is_camel(m.species()) {
             // Camel.getPassengerAttachmentPoint: the driver half a block
             // forward, at the body anchor (lower while sitting), turned with
-            // the camel.
-            let a = horizon_client::mobs::camel::passenger_attachment(m);
-            let turned = Vec3::new(a[0], a[1], a[2])
-                .rotate_y(-m.yaw * (std::f64::consts::PI / 180.0) as f32);
-            at = Vec3::new(
-                m.position.x + turned.x,
-                m.position.y + turned.y - 0.6,
-                m.position.z + turned.z,
-            );
-        }
+            // the camel. Its point already carries the camel's own scale.
+            seat_of(m, horizon_client::mobs::camel::passenger_attachment(m))
+        } else {
+            seat_of(m, horizon_client::mobs::riders::type_attachment(m))
+        };
         if m.species() == Species::HappyGhast {
             // The attachment of the player's seat on the harnessed back.
             let seat = self.remote.as_ref().map_or(0, |r| r.passenger_index);
-            let a = horizon_client::mobs::riders::happy_ghast_attachment(seat);
-            let turned = Vec3::new(a[0], a[1], a[2])
-                .rotate_y(-m.yaw * (std::f64::consts::PI / 180.0) as f32);
-            at = Vec3::new(
-                m.position.x + turned.x,
-                m.position.y + turned.y - 0.6,
-                m.position.z + turned.z,
-            );
-        }
-        if horizon_client::mobs::llama::is_llama(m.species()) {
-            // The passenger attachment (0, 1.37, -0.3), half of it for a baby.
-            let (y, z) = if m.is_baby() {
-                (0.81, -0.15)
-            } else {
-                (1.37, -0.3)
-            };
-            let yaw = f64::from(m.yaw.to_radians());
-            at = Vec3::new(
-                m.position.x - z * yaw.sin(),
-                m.position.y + y - 0.6,
-                m.position.z + z * yaw.cos(),
+            at = seat_of(
+                m,
+                horizon_client::mobs::riders::happy_ghast_attachment(seat),
             );
         }
         // AbstractHorse.getPassengerAttachmentPoint: the rider slides back and
         // up while the horse rears.
-        let rear = equine::rear_offset(m);
-        let rear = Vec3::new(rear[0], rear[1], rear[2])
-            .rotate_y(-m.yaw * (std::f64::consts::PI / 180.0) as f32);
+        let rear = turned(equine::rear_offset(m), m.yaw);
         at = Vec3::new(at.x + rear.x, at.y + rear.y, at.z + rear.z);
         // The tick a rider takes its seat is a teleport (`Entity.moveTo`), which
         // sets the old position too: the camera must not sweep from where the
@@ -2046,3 +2019,7 @@ mod camel_jump_tests;
 #[cfg(test)]
 #[path = "strider_lava_boarding_tests.rs"]
 mod strider_lava_boarding_tests;
+
+#[cfg(test)]
+#[path = "ride_seat_tests.rs"]
+mod ride_seat_tests;
