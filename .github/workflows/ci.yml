@@ -124,8 +124,12 @@ jobs:
       - name: Test offline research tooling
         if: steps.queued.outputs.tested != 'true'
         run: python -m unittest discover -s tests -v
+  # Not in the merge queue: GitHub's 20 concurrent jobs are what the queue waits for, every pull request passed this
+  # job on its own head, and main's push after the merge still runs clippy (a combination that breaks a lint shows
+  # there). The required `verify` counts a skipped job as passed.
   verify-lint:
     name: verify (format and lint)
+    if: github.event_name != 'merge_group'
     runs-on: >-
       ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && (vars.SELF_HOSTED_CI == 'all' ||
       github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository &&
@@ -390,12 +394,13 @@ jobs:
             [ "$result" = success ] || [ "$result" = skipped ] || exit 1
           done
   # The launcher is its own workspace (launcher/Cargo.toml), so verify's cargo runs never build it. A pull request that
-  # changes it or a crate it builds is checked here, and so are the merge queue and main's pushes when their range
-  # changes it: two pull requests can each pass alone and break it together (#2059 and the registry ratings did,
-  # 2026-10-26). The queue's range runs from main to the queued pull requests' head, so it covers every pull request
-  # queued ahead, and two that break the launcher together still run it; a push's range is the commits it added to main.
-  # A range the job cannot read (a push with no earlier commit, or one a force push removed) runs everything.
+  # changes it or a crate it builds is checked here, and so are main's pushes when their range changes it: two pull
+  # requests can each pass alone and break it together (#2059 and the registry ratings did, 2026-10-26), and the push
+  # after their merge shows it. Not in the merge queue, which waits on GitHub's 20 concurrent jobs and does not need
+  # this one (only `verify` is required). A push's range is the commits it added to main; a range the job cannot read
+  # (a push with no earlier commit, or one a force push removed) runs everything.
   launcher:
+    if: github.event_name != 'merge_group'
     runs-on: >-
       ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && (vars.SELF_HOSTED_CI == 'all' ||
       github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository &&
