@@ -10056,10 +10056,10 @@ impl Game<'_> {
     ) {
         if let Some(r) = self.remote.as_mut() {
             r.menu = Some((container, "minecraft:merchant".to_owned()));
-            r.menu_title = Some(text);
+            r.menu_title = Some(text.clone());
         }
         let session = horizon_client::merchant::Session::new(Vec::new(), true);
-        self.open_remote_merchant(session, (!title.is_empty()).then_some(title));
+        self.open_remote_merchant(session, (!title.is_empty()).then_some(text));
     }
     /// ClientboundMerchantOffersPacket.
     fn remote_merchant_offers(&mut self, p: play::MerchantOffers) {
