@@ -6,6 +6,7 @@
 use super::Game;
 use horizon_client::{
     enchant::EffectContext,
+    health::ArmorWeapon,
     items::ItemStack,
     mobs::{Damage, Mob, MobEvent, Species},
     particles::{ParticleOptions, ParticleType},
@@ -15,6 +16,10 @@ use horizon_core::{
     position::BlockPos,
     random::RandomSource,
 };
+
+#[cfg(test)]
+#[path = "player_armor_weapon_tests.rs"]
+mod player_armor_weapon_tests;
 
 /// `MaceItem.SMASH_ATTACK_FALL_THRESHOLD`.
 const FALL_THRESHOLD: f64 = 1.5;
@@ -195,6 +200,33 @@ impl Game<'_> {
             .map(|s| horizon_client::lan::playerdata::uuid_ints(s.owner))
             .or(self.level.player_uuid)?;
         (actual == owner).then_some(actual)
+    }
+    /// `DamageSource.getWeaponItem` for a hit on the player, when its
+    /// `armor_effectiveness` enchantments (Breach) can thin the armour: the
+    /// stack the mob that swung holds, and the registry its effects are read
+    /// from. A projectile's weapon (an arrow's `firedFromWeapon`) is not
+    /// passed: no vanilla bow carries the component.
+    pub(super) fn player_armor_weapon(
+        &self,
+        attacker: Option<u32>,
+        projectile: bool,
+    ) -> Option<ArmorWeapon> {
+        if projectile {
+            return None;
+        }
+        let mob = self.mobs.iter().find(|m| Some(m.id) == attacker)?;
+        let stack = mob.extra.main_hand_stack()?;
+        let enchantments = world_stations!(self).enchantments.clone();
+        if !enchantments.has_component(stack, "minecraft:armor_effectiveness") {
+            return None;
+        }
+        Some(ArmorWeapon {
+            stack: stack.clone(),
+            enchantments,
+            attacker: mob.kind.id.clone(),
+            // `DamageSource.isDirect`: the mob swung itself.
+            is_direct: true,
+        })
     }
     /// `LivingEntity.hurtServer` of the mob at `index` by the player's hit:
     /// the weapon's `armor_effectiveness` enchantments (Breach) thin its armor.

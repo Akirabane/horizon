@@ -322,12 +322,8 @@ fn target_named(
 /// (with its effect), a sting, a sonic boom.
 fn hits_target(e: &MobEvent, want: Who) -> bool {
     match (e, want) {
-        (
-            MobEvent::AttackPlayer(..)
-            | MobEvent::AttackPlayerWithEffect { .. }
-            | MobEvent::StingPlayer { .. },
-            Who::Player,
-        ) => true,
+        (MobEvent::AttackPlayer(..) | MobEvent::AttackPlayerWithEffect { .. }, Who::Player) => true,
+        (MobEvent::Sting { target, .. }, want) => *target == want,
         (
             MobEvent::AttackMob { target, .. }
             | MobEvent::DamageMob { target, .. }
@@ -2343,21 +2339,15 @@ impl Game<'_> {
                     self.combat.hit_landed =
                         self.mob_hits_player(amount, from, "minecraft:mob_attack");
                 }
-                // doHurtTarget: the effect only when hurtServer took damage.
                 // Bee.doHurtTarget: a sting that hurt leaves the stinger in the
-                // body, then the poison.
-                MobEvent::StingPlayer {
+                // body, then the poison; the bee's own stinger, calm-down and
+                // sound follow only then too.
+                MobEvent::Sting {
+                    target,
                     amount,
-                    from,
                     poison_ticks,
-                } => {
-                    if self.mob_hits_player(amount, from, "minecraft:mob_attack") {
-                        self.combat.stuck.add_stinger();
-                        if poison_ticks > 0 {
-                            self.give_player_effect("minecraft:poison", poison_ticks, 0);
-                        }
-                    }
-                }
+                    source,
+                } => self.sting(target, amount, poison_ticks, source),
                 MobEvent::AttackPlayerWithEffect {
                     amount,
                     from,
@@ -4018,11 +4008,10 @@ impl Game<'_> {
             // the armor value, so a piece that breaks on this hit takes no
             // part in the reduction of the hit that broke it (#11696). The
             // hit's own advancement keeps the helmet phase's reported amount.
-            let damages_helmet = self
-                .health_resources
-                .damage
-                .in_tag(id, "minecraft:damages_helmet");
-            self.hurt_player_equipment(id, amount, blocking, living_cause, causing)
+            let catalog = &self.health_resources.damage;
+            let damages_helmet = catalog.in_tag(id, "minecraft:damages_helmet");
+            let weapon = self.player_armor_weapon(attacker, projectile);
+            self.hurt_player_equipment(id, amount, blocking, living_cause, causing, weapon)
                 .map(|(outcome, actual)| {
                     if damages_helmet {
                         resolved_damage = Some(actual);
@@ -4189,7 +4178,7 @@ impl Game<'_> {
         let mut canceled = false;
         if !self.creative
             && let Some(id) = self.health_resources.damage.id(damage_type)
-            && let Ok((o, _)) = self.hurt_player_equipment(id, amount, None, false, 0)
+            && let Ok((o, _)) = self.hurt_player_equipment(id, amount, None, false, 0, None)
         {
             canceled = o.canceled;
         }
@@ -5176,7 +5165,7 @@ impl Game<'_> {
             let amount = self.shot_damage(&mut arrow, None);
             let burning = p.arrow.as_ref().is_some_and(|a| a.on_fire());
             let creative = p.owner == Some(Who::Player) && self.creative;
-            self.arrow_hits_cart(i, amount, p.velocity, burning, creative);
+            self.arrow_hits_cart(i, amount, p.velocity, burning, creative, p.owner, p.guest);
             self.finish_arrow_hit(arrow, EntityHit::Hurt);
             return Ok(());
         }
