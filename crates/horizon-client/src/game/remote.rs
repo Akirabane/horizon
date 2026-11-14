@@ -8129,9 +8129,10 @@ impl Game<'_> {
                 };
                 (result, DryUse::default())
             };
-            // DebugStickItem.useOn once the block passed: SUCCESS on the client
-            // too (the hand swings below); only the server changes the block.
-            let (result, changes) = if debug_stick && !spectator && !result.consumes_action() {
+            let may_use_on =
+                !result.consumes_action() && self.with_hand(hand, |g| g.may_use_on(hit.pos));
+            // DebugStickItem.useOn, gated like every useOn: SUCCESS here; the server acts.
+            let (result, changes) = if debug_stick && !spectator && may_use_on {
                 (InteractionResult::Success, DryUse::default())
             } else {
                 (result, changes)
@@ -8180,7 +8181,7 @@ impl Game<'_> {
                 .is_some_and(|s| &*s.item == "minecraft:armor_stand")
                 && held
                     .as_ref()
-                    .is_some_and(|s| self.armor_stand_spawn(&hit, s).is_some());
+                    .is_some_and(|s| may_use_on && self.armor_stand_spawn(&hit, s).is_some());
             let seq = self.next_sequence();
             let cursor = [
                 (hit.point[0] - f64::from(hit.pos[0])) as f32,
@@ -8236,12 +8237,11 @@ impl Game<'_> {
                 return true;
             } else if held
                 .as_ref()
-                .is_some_and(|s| &*s.item == "minecraft:bone_meal")
+                .is_some_and(|s| &*s.item == "minecraft:bone_meal" && may_use_on)
                 && self.remote_bone_meal_succeeds(&hit)
             {
-                // BoneMealItem.useOn succeeded on this client's level (SUCCESS;
-                // the server grows the plant): this hand swings and the click
-                // ends, so the other hand (a torch) is never tried.
+                // BoneMealItem.useOn succeeded on this client's level where
+                // ItemStack.useOn lets it: this hand swings and the click ends.
                 self.with_hand(hand, Game::swing_arm);
                 return true;
             } else if stand_fits {
