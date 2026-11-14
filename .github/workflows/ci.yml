@@ -191,12 +191,29 @@ jobs:
             sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
           fi
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-      # Dependencies and the workspace's own build, saved from main's runs (pull requests read main's cache).
+      # Dependencies, and for pull requests the workspace's own build too, saved from main's runs (pull requests read
+      # main's cache). The key is the UTC date, so main saves a fresh one each day and a pull request restores the
+      # latest. .ci-built/sha, written below, says which main commit that build is of.
+      - name: Which day's build cache
+        if: steps.rust.outputs.required != 'false' && runner.environment == 'github-hosted'
+        id: build-day
+        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: steps.rust.outputs.required != 'false' && runner.environment == 'github-hosted'
         with:
           shared-key: verify
+          key: ${{ steps.build-day.outputs.day }}
+          cache-workspace-crates: true
+          cache-directories: .ci-built
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Cargo rebuilds a crate when a source file is newer than its build. Checkout gives every file today's time, so
+      # a pull request pins the unchanged files to 2001 and touches the ones that differ from main's built commit. The
+      # merge queue and main's pushes skip this and rebuild in full, so a wrong reuse can never reach main.
+      - name: Rebuild only what this pull request changed
+        if: >-
+          github.event_name == 'pull_request' && steps.rust.outputs.required != 'false' &&
+          runner.environment == 'github-hosted'
+        run: tools/ci/pin_mtimes.sh .ci-built
       # sccache through GitHub's cache, GitHub's runners only (ours keep their build folder): rust-cache keeps the
       # dependencies but cleans the workspace crates and the path-patched ones (third_party), so cargo rebuilt ~70
       # crates on every run. sccache knows them by their content. Only main's pushes write to it: an entry a pull
@@ -240,6 +257,12 @@ jobs:
           # recompiling the workspace with a different dependency graph.
           cargo +stable test --locked ${PACKAGES:---workspace} --lib --bins --tests mod_content::tests:: -- --ignored
           cargo +stable test --locked ${PACKAGES:---workspace} --doc
+      # What main's cache holds is a build of this commit: pull requests compare their files against it.
+      - name: Record the commit this build is of
+        if: >-
+          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          steps.rust.outputs.required != 'false' && runner.environment == 'github-hosted'
+        run: mkdir -p .ci-built && git rev-parse HEAD > .ci-built/sha
       - name: What sccache reused
         if: always() && steps.rust.outputs.required != 'false' && runner.environment == 'github-hosted'
         run: |
