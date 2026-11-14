@@ -364,7 +364,7 @@ pub fn finalize(m: &mut Mob, biome: &BiomeFacts, difficulty: &LocalDifficulty) {
                 2
             };
         }
-        S::Slime | S::MagmaCube => super::cube::finalize(m),
+        S::Slime | S::MagmaCube => super::cube::finalize(m, difficulty.special()),
         _ => {}
     }
     // Zombie.finalizeSpawn ends with handleAttributes: the reinforcement
