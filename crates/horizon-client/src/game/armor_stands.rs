@@ -612,10 +612,8 @@ impl Game<'_> {
             let at = [stand.position.x, stand.position.y, stand.position.z];
             let name = stand.custom_name.as_ref().map(|name| name.plain());
             if alive {
-                // NameTagItem shrinks the stack even with infinite materials.
-                let mut rest = stack.clone();
-                rest.count -= 1;
-                *self.held_mut() = (rest.count > 0).then_some(rest);
+                // `Player.interactOn` gives a creative player the count back.
+                self.consume_held();
                 if let (Some(player), Some(player_name), Some(name)) =
                     (self.lan_acting_uuid, self.lan_acting_name.clone(), name)
                 {

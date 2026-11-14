@@ -141,7 +141,8 @@ impl Game<'_> {
         m.custom_name_text = text;
         m.persistent = true;
         let at = [m.position.x, m.position.y, m.position.z];
-        // itemStack.shrink(1), in creative too.
+        // itemStack.shrink(1); `Player.interactOn` puts a creative player's
+        // count back, which `consume_held` skips for them.
         self.consume_held();
         // `Mob.interact`: the tag consumed the use, so
         // `gameEvent(GameEvent.ENTITY_INTERACT, player)` at the mob.
@@ -901,15 +902,16 @@ fn collect_vehicle_ids(
 fn named_by_player_list(players: &[(&Mob, String)]) -> std::collections::HashSet<u32> {
     players.iter().map(|(player, _)| player.id).collect()
 }
-/// `EntityAttachment.NAME_TAG`: `(0, bbHeight, 0)` of the box of the entity's
-/// current pose, which the submitter lifts 0.5 more, between the last two tick
-/// positions. The player box is `Pose::dimensions(1.0)`.
+/// `EntityAttachment.NAME_TAG` of the entity's current pose
+/// (`Mob::name_tag_height`), which `SubmitNodeCollector.submitNameTag` lifts
+/// 0.5 more, between the last two tick positions. The player box is
+/// `Pose::dimensions(1.0)`.
 /// shortcut: the scale attribute is not in the tag height, add `model_scale`
 /// when tags on scaled players matter.
 pub(super) fn name_tag_at(m: &Mob, alpha: f64) -> glam::DVec3 {
     glam::DVec3::new(
         m.previous.x + (m.position.x - m.previous.x) * alpha,
-        m.previous.y + (m.position.y - m.previous.y) * alpha + f64::from(m.height()) + 0.5,
+        m.previous.y + (m.position.y - m.previous.y) * alpha + m.name_tag_height() + 0.5,
         m.previous.z + (m.position.z - m.previous.z) * alpha,
     )
 }
@@ -966,6 +968,10 @@ pub(super) fn name_component(m: &Mob, name: &str) -> horizon_world::nbt::Tag {
         None => horizon_protocol::text::literal(name),
     }
 }
+
+#[cfg(test)]
+#[path = "name_tag_tests.rs"]
+mod name_tag_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1357,8 +1363,3 @@ mod tests {
         );
     }
 }
-
-// Naming with a name tag; lives here, by the name tag code it tests.
-#[cfg(test)]
-#[path = "name_tag_tests.rs"]
-mod name_tag_tests;
