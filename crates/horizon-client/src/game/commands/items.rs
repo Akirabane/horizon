@@ -31,6 +31,8 @@ pub(in crate::game) enum Slot {
     /// An armor stand's equipment (`ArmorStand::SLOTS` index).
     Stand(u32, usize),
     Frame(u32),
+    /// A dropped item's stack: `ItemEntity.getSlot(0)`, the `contents` slot.
+    Item(u32),
     /// A chest or hopper minecart's slot (`ContainerEntity.getChestVehicleSlot`).
     Cart(u32, usize),
     Block([i32; 3], usize),
@@ -192,6 +194,16 @@ impl Game<'_> {
             Owner::Entity(Target::Frame(id)) => {
                 if matches_name(name, "container.0") || matches_name(name, "contents") {
                     add(Slot::Frame(*id));
+                }
+            }
+            // `ItemEntity.getSlot(0)`: `contents`, `container.0` and `hotbar.0`
+            // are all slot 0 (`SlotRanges`), and it holds the stack.
+            Owner::Entity(Target::Item(id)) => {
+                if matches_name(name, "contents")
+                    || matches_name(name, "container.0")
+                    || matches_name(name, "hotbar.0")
+                {
+                    add(Slot::Item(*id));
                 }
             }
             // `getChestVehicleSlot` takes any index below `getContainerSize`.
@@ -444,6 +456,12 @@ impl Game<'_> {
                 .cloned()
                 .flatten(),
             Slot::Frame(id) => self.item_frames.iter().find(|f| f.id == *id)?.item.clone(),
+            Slot::Item(id) => self
+                .dropped
+                .iter()
+                .find(|e| e.id == *id)
+                .map(|e| e.stack.clone())
+                .filter(|s| &*s.item != "minecraft:air" && s.count > 0),
             Slot::Cart(id, i) => self.cart_slots(*id)?.get(*i).cloned().flatten(),
             Slot::Block(p, i) => self
                 .world
@@ -729,6 +747,17 @@ impl Game<'_> {
                 }
                 true
             }
+            Slot::Item(id) => match self.dropped.iter_mut().find(|e| e.id == *id) {
+                Some(entity) => {
+                    // `ItemEntity.setItem`: the stack is the entity's.
+                    match stack.filter(|s| &*s.item != "minecraft:air" && s.count > 0) {
+                        Some(stack) => entity.stack = stack,
+                        None => entity.stack = ItemStack::new("minecraft:air", 0),
+                    }
+                    true
+                }
+                None => false,
+            },
             Slot::Frame(id) => match self.item_frames.iter().position(|f| f.id == *id) {
                 Some(i) => {
                     self.set_frame_item(i, stack);
@@ -2837,3 +2866,6 @@ mod set_custom_data_tests {
         assert!(saved.is_none_or(|c| c.get("minecraft:custom_data").is_none()));
     }
 }
+
+#[cfg(test)]
+mod item_entity_contents_tests;
