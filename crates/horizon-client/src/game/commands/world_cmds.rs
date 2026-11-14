@@ -771,46 +771,13 @@ impl Game<'_> {
             _ => None,
         };
         let field = |key: &str| opts.as_ref().and_then(|c| c.get(&key.into()).cloned());
-        let number = |t: &Tag| -> Option<f32> {
-            Some(match t {
-                Tag::Byte(v) => f32::from(*v),
-                Tag::Short(v) => f32::from(*v),
-                Tag::Int(v) => *v as f32,
-                Tag::Long(v) => *v as f32,
-                Tag::Float(v) => f32::from_bits(*v),
-                Tag::Double(v) => f64::from_bits(*v) as f32,
-                _ => return None,
-            })
-        };
         let string = |t: &Tag| match t {
             Tag::String(s) => Some(s.to_string_lossy()),
             _ => None,
         };
-        // ExtraCodecs.RGB_COLOR_CODEC: an int or a list of three floats.
-        let rgb = match field("color") {
-            Some(Tag::List(l)) if l.len() >= 3 => [
-                number(&l[0]).unwrap_or(1.0),
-                number(&l[1]).unwrap_or(0.0),
-                number(&l[2]).unwrap_or(0.0),
-            ],
-            Some(Tag::Int(v)) => [
-                ((v >> 16) & 255) as f32 / 255.0,
-                ((v >> 8) & 255) as f32 / 255.0,
-                (v & 255) as f32 / 255.0,
-            ],
-            _ => [1.0, 0.0, 0.0],
-        };
         // The block state of a block particle, for its packet.
         let mut block_state = None;
         let options = match ty {
-            ParticleType::Dust => ParticleOptions::dust(
-                rgb,
-                field("scale")
-                    .as_ref()
-                    .and_then(number)
-                    .unwrap_or(1.0)
-                    .clamp(0.01, 4.0),
-            ),
             // ItemParticleOption: an item id, or a stack {id, ...}.
             ParticleType::Item => {
                 let id = match field("item") {
@@ -832,6 +799,7 @@ impl Game<'_> {
                 ParticleOptions::simple(ty)
             }
             ParticleType::Block
+            | ParticleType::BlockCrumble
             | ParticleType::FallingDust
             | ParticleType::DustPillar
             | ParticleType::BlockMarker => {
@@ -876,7 +844,13 @@ impl Game<'_> {
                     _ => ParticleOptions::simple(ty),
                 }
             }
-            _ => ParticleOptions::simple(ty),
+            // Every other type with options decodes its own codec
+            // (`ParticleTypes.CODEC`): dust, spells, sculk charge, shriek,
+            // geysers. A type without options keeps the defaults.
+            _ => opts
+                .as_ref()
+                .and_then(|c| crate::game::potions::particle_options(ty, c))
+                .unwrap_or_else(|| ParticleOptions::simple(ty)),
         };
         let pos = self
             .position_arg(ctx, "pos")
@@ -2863,6 +2837,10 @@ mod vehicle_damage_command_tests {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "../particle_command_tests.rs"]
+mod particle_command_tests;
 
 #[cfg(test)]
 #[path = "attribute_tests.rs"]
