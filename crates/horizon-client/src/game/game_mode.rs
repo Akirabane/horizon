@@ -318,6 +318,12 @@ impl Game<'_> {
     ) -> bool {
         self.stack_predicate(stack, "minecraft:can_place_on", clicked)
     }
+    /// `ItemStack.useOn`'s gate before any item's own `useOn`: a player who
+    /// may build, or an adventure player whose held item's `can_place_on`
+    /// matches the clicked block.
+    pub(super) fn may_use_on(&self, clicked: [i32; 3]) -> bool {
+        self.may_build() || self.can_place_on_in_adventure(clicked)
+    }
     /// `ServerPlayer.setGameMode(SPECTATOR)`: `stopRiding`.
     fn dismount_for_spectator(&mut self) {
         let Some(id) = self.riding else {
