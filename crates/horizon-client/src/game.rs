@@ -7765,9 +7765,7 @@ impl Game<'_> {
             .filter(|s| s.name.ends_with("cauldron"))
             .cloned()?;
         let above = self.world.block(pos[0], pos[1] + 1, pos[2]);
-        let under_water = registry
-            .state(above)
-            .is_some_and(|s| s.name == "minecraft:water");
+        let under_water = cauldrons::is_under_water(self.res.facts(), above);
         Some((state, under_water))
     }
     /// What `BlockTransformer.transformBlock` would do with a held axe, hoe
@@ -12636,6 +12634,8 @@ struct LandingVibration {
 }
 #[cfg(test)]
 mod allay_pickup_cooldown_tests;
+#[cfg(test)]
+mod cauldron_underwater_tests;
 #[cfg(test)]
 mod dragon_fireball_motion_tests;
 #[cfg(test)]
