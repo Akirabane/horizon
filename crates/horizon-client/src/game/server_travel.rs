@@ -211,6 +211,7 @@ impl Game<'_> {
             placed: false,
             hold: true,
             left: None,
+            consume: false,
         });
     }
     /// Before the arrivals: a hold follows the player where a mod sent them (`native_player_teleport` may cancel
