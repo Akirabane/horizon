@@ -135,12 +135,31 @@ jobs:
             sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
           fi
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-      # Dependencies checked by clippy, saved from main's runs (pull requests read main's cache).
+      # Dependencies and the workspace crates' own clippy output, saved from main's runs (pull requests read main's
+      # cache). rust-cache leaves the workspace crates out by default, so clippy re-checked all of them on every run;
+      # cache-workspace-crates keeps them, and a new key each UTC day makes main save a fresh copy once a day (the
+      # restore falls back to the newest older one). .ci-built holds the commit that copy was checked at.
+      - name: Which day's lint cache
+        if: steps.rust.outputs.required != 'false' && runner.environment == 'github-hosted'
+        id: lint-day
+        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: steps.rust.outputs.required != 'false' && runner.environment == 'github-hosted'
         with:
           shared-key: verify-lint
+          key: ${{ steps.lint-day.outputs.day }}
+          cache-workspace-crates: true
+          cache-directories: .ci-built
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Cargo rebuilds a crate whose source file is newer than its saved output, and a checkout stamps every file with
+      # the time of the checkout. So on a pull request the files are dated old again, except those that changed since
+      # the cached commit, and clippy re-checks only those crates and what depends on them. Without a usable
+      # .ci-built/sha the script does nothing and clippy checks everything, as before.
+      - name: Date unchanged files as the cache saw them
+        if: >-
+          github.event_name == 'pull_request' && steps.rust.outputs.required != 'false' &&
+          runner.environment == 'github-hosted'
+        run: tools/ci/pin_mtimes.sh .ci-built
       - name: Check formatting and lint
         if: steps.rust.outputs.required != 'false'
         run: |
@@ -155,6 +174,13 @@ jobs:
           steps.rust.outputs.required != 'false' &&
           (github.event_name != 'pull_request' || steps.rust.outputs.server_build != 'false')
         run: cargo +stable clippy -p horizon-client --lib --bins --locked --no-default-features -- -D warnings
+      # Only main's passing run records its commit; pull requests restore it and never save it.
+      - name: Record the commit this lint cache was checked at
+        if: >-
+          github.event_name == 'push' && github.ref == 'refs/heads/main' && runner.environment == 'github-hosted'
+        run: |
+          mkdir -p .ci-built
+          git rev-parse HEAD > .ci-built/sha
   verify-test:
     name: verify (Rust tests)
     runs-on: >-
