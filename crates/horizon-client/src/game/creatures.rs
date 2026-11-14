@@ -6043,6 +6043,8 @@ impl Game<'_> {
         let Some(index) = self.mob_interaction_target(target) else {
             return Ok(false);
         };
+        // CamelHusk.interact: any click on it keeps it (`setPersistenceRequired`).
+        horizon_client::mobs::camel::keep_on_interact(&mut self.mobs[index]);
         // PlayerInteractTrigger: the name tag as it was before it named the mob.
         let used = self.held().cloned();
         if self.name_mob(index) {
@@ -6052,10 +6054,8 @@ impl Game<'_> {
             }
             return Ok(true);
         }
-        if self
-            .held()
-            .is_some_and(|stack| &*stack.item == "minecraft:shears")
-        {
+        let shears = self.held().is_some_and(|s| &*s.item == "minecraft:shears");
+        if shears {
             let mob = &self.mobs[index];
             let shearable = match mob.species() {
                 Species::Sheep => !mob.extra.sheared && !mob.is_baby(),
