@@ -93,7 +93,8 @@ def session(name, bin_dir, out, env_base, args, flips, pack=None):
                 counts.append(flip(game, display, to))
             for scene in SCENES:
                 identity.shoot_named(game, out, f'{name}.{n}', scene)
-        lab.write_json(out / f'{name}.layout.json', game.ctl('status')['renderer']['packed_layout'])
+        lab.write_json(out / f'{name}.layout.json', {'packed_layout': game.ctl('status')['renderer']['packed_layout'],
+                                                     'flat': game.ctl('section-draws')['flat']})
         (out / f'{name}.log').write_text(str(game.ctl('logs', '--lines', '4000', check=False)), encoding='utf-8')
     finally:
         game.quit()
@@ -131,7 +132,11 @@ def checks(out, name, counts):
 def pack_ran(out):
     """That the pack drew: solid terrain laid out wide, as for a Horizon pack, and pictures unlike the first game's."""
     problems = []
-    if json.loads((out / 'pack.layout.json').read_text())[0]:
+    layout = json.loads((out / 'pack.layout.json').read_text())
+    # Without flat draws (lavapipe) solid terrain is wide with or without a pack, so only the pictures tell.
+    if not layout['flat']:
+        print('pack: no flat draws on this device: the wide layout is not checked, only the pictures')
+    elif layout['packed_layout'][0]:
         problems.append('pack: solid terrain stayed compact: no Horizon pack ran')
     for n in range(3):
         for scene in SCENES:
