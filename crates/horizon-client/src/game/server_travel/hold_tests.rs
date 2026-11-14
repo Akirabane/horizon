@@ -74,6 +74,7 @@ fn server() -> (Game<'static>, LanHost, mpsc::Receiver<Out>) {
     guest.dimension = "minecraft:overworld".into();
     guest.placed = true;
     guest.loaded = true;
+    guest.load_timeout = 0;
     guest.health = 20.0;
     game.lan.as_mut().unwrap().hub.guests.push(guest);
     let host = game.lan.take().unwrap();
@@ -88,10 +89,12 @@ fn landing(host: &LanHost) -> bool {
 #[ignore = "prepared resources in HORIZON_TEST_RESOURCES"]
 fn a_hold_ignores_the_clients_moves_until_a_tp_to_lit_land_replaces_it() {
     let (mut game, mut host, _rx) = server();
+    host.hub.guests[0].position = [FAR, 150.0, FAR];
     game.hold_for_chunks(CONN, Vec3::new(FAR, 150.0, FAR));
     game.tick_server_travel(&mut host);
     assert!(landing(&host), "held while the far chunks are not lit");
     // A second `tp`, to land that is lit, ends the wait: the moves are heard again.
+    host.hub.guests[0].position = [0.5, 100.0, 0.5];
     game.hold_for_chunks(CONN, Vec3::new(0.5, 100.0, 0.5));
     game.tick_server_travel(&mut host);
     assert!(!game.on_server_trip(CONN));
@@ -102,6 +105,7 @@ fn a_hold_ignores_the_clients_moves_until_a_tp_to_lit_land_replaces_it() {
 #[ignore = "prepared resources in HORIZON_TEST_RESOURCES"]
 fn a_hold_ended_by_a_trip_elsewhere_hears_the_client_again() {
     let (mut game, mut host, _rx) = server();
+    host.hub.guests[0].position = [FAR, 150.0, FAR];
     game.hold_for_chunks(CONN, Vec3::new(FAR, 150.0, FAR));
     game.tick_server_travel(&mut host);
     assert!(landing(&host));
@@ -115,6 +119,7 @@ fn a_hold_ended_by_a_trip_elsewhere_hears_the_client_again() {
 #[ignore = "prepared resources in HORIZON_TEST_RESOURCES"]
 fn a_hold_places_the_player_once_the_chunks_are_lit() {
     let (mut game, mut host, _rx) = server();
+    host.hub.guests[0].position = [FAR, 150.0, FAR];
     game.hold_for_chunks(CONN, Vec3::new(FAR, 150.0, FAR));
     game.tick_server_travel(&mut host);
     assert!(landing(&host));
@@ -142,6 +147,219 @@ fn a_hold_follows_the_destination_a_mod_chose() {
     // A mod canceled it: the player stays on lit land, so there is nothing to wait for.
     host.hub.guests[0].position = [0.5, 100.0, 0.5];
     game.tick_server_travel(&mut host);
+    game.tick_server_travel(&mut host);
+    assert!(!game.on_server_trip(CONN));
+    assert!(!landing(&host));
+}
+
+#[test]
+#[ignore = "prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_command_arrival_holds_movement_until_lit_then_ticks_damage_again() {
+    use super::LevelTeleport;
+    use horizon_protocol::packets::play::{self, Serverbound as S};
+
+    let (mut game, mut host, _rx) = server();
+    let at = [FAR, 150.0, FAR];
+    let chunk = (FAR as i32) >> 4;
+    // The client can already stand and move here, but the arrival's full 5x5 is not lit.
+    for x in chunk - 1..=chunk + 1 {
+        for z in chunk - 1..=chunk + 1 {
+            game.streaming
+                .insert_remote(&mut game.world, Chunk::empty(x, z));
+        }
+    }
+    // Exercise the queued command arrival without opening a second saved level.
+    game.level_teleports.push(LevelTeleport {
+        conn: CONN,
+        dim: game.dim,
+        at,
+        rotation: None,
+        vehicle: None,
+        cause: Some("command"),
+    });
+    game.run_level_teleports(&mut host);
+    game.tick_server_travel(&mut host);
+    assert!(game.on_server_trip(CONN));
+    let id = host.hub.guests[0].teleport_counter;
+    host.hub.guests[0].inbox.push_back((
+        S::AcceptTeleportation(play::AcceptTeleportation {
+            id,
+            x: at[0],
+            y: at[1],
+            z: at[2],
+            yaw: 0.0,
+            pitch: 0.0,
+        }),
+        0,
+    ));
+    let step = play::MovePlayerPos {
+        x: at[0] + 1.0,
+        y: at[1],
+        z: at[2],
+        flags: 0,
+    };
+    host.hub.guests[0]
+        .inbox
+        .push_back((S::MovePlayerPos(step.clone()), 0));
+    host.hub.drain_packets(&mut game.server_ctx());
+    assert_eq!(
+        host.hub.guests[0].position, at,
+        "a pending arrival cannot be left behind"
+    );
+    assert!(landing(&host));
+
+    light(&mut game, chunk);
+    game.tick_server_travel(&mut host);
+    assert!(!game.on_server_trip(CONN));
+    assert!(!landing(&host));
+    // End the preceding client tick's position-packet budget before the next move.
+    host.hub.guests[0]
+        .inbox
+        .push_back((S::ClientTickEnd(horizon_protocol::packets::Empty), 0));
+    host.hub.guests[0]
+        .inbox
+        .push_back((S::MovePlayerPos(step), 0));
+    host.hub.drain_packets(&mut game.server_ctx());
+    assert_eq!(host.hub.guests[0].position, [at[0] + 1.0, at[1], at[2]]);
+
+    let hit = |game: &mut Game<'_>| game.mob_hits_player(6.0, at, "minecraft:player_attack");
+    assert_eq!(game.as_guest(&mut host, CONN, hit), Some(true));
+    let health = host.hub.guests[0].health;
+    for _ in 0..20 {
+        game.tick_guests(&mut host);
+    }
+    assert_eq!(game.as_guest(&mut host, CONN, hit), Some(true));
+    assert!(
+        host.hub.guests[0].health < health,
+        "the same melee hit hurts again after its cooldown"
+    );
+}
+
+#[test]
+#[ignore = "prepared resources in HORIZON_TEST_RESOURCES"]
+fn respawn_arrivals_hold_movement_then_resume_damage_and_pickups() {
+    use horizon_client::items::ItemStack;
+    use horizon_protocol::packets::play::{self, Serverbound as S};
+
+    for personal in [false, true] {
+        let (mut game, mut host, _rx) = server();
+        let pos = [FAR as i32, 150, FAR as i32];
+        let chunk = pos[0] >> 4;
+        game.level.world_spawn = Some(pos);
+        assert!(game.ui.rules.set_string("respawn_radius", "0"));
+        let guest = &mut host.hub.guests[0];
+        guest.dead = true;
+        guest.health = 0.0;
+        if personal {
+            guest.respawn_elsewhere = Some((game.dim.id().into(), pos, 93.0, 12.0, true));
+        }
+        // The client can render its immediate surroundings before all 5x5 arrival chunks are lit.
+        for x in chunk - 1..=chunk + 1 {
+            for z in chunk - 1..=chunk + 1 {
+                game.streaming
+                    .insert_remote(&mut game.world, Chunk::empty(x, z));
+            }
+        }
+        game.guest_respawn(&mut host, CONN);
+        game.tick_server_travel(&mut host);
+        assert!(game.on_server_trip(CONN));
+        assert!(landing(&host), "respawn must hold movement while loading");
+        let guest = &mut host.hub.guests[0];
+        let at = guest.position;
+        guest
+            .inbox
+            .push_back((S::PlayerLoaded(horizon_protocol::packets::Empty), 0));
+        guest.inbox.push_back((
+            S::AcceptTeleportation(play::AcceptTeleportation {
+                id: guest.teleport_counter,
+                x: at[0],
+                y: at[1],
+                z: at[2],
+                yaw: guest.yaw,
+                pitch: guest.pitch,
+            }),
+            0,
+        ));
+        guest.inbox.push_back((
+            S::MovePlayerPos(play::MovePlayerPos {
+                x: at[0] + 1.0,
+                y: at[1],
+                z: at[2],
+                flags: 0,
+            }),
+            0,
+        ));
+        host.hub.drain_packets(&mut game.server_ctx());
+        assert_eq!(
+            host.hub.guests[0].position, at,
+            "cannot abandon the respawn destination"
+        );
+        // A second pass must preserve the respawn search, even if its eventual stand-up spot
+        // differs from the original target; it must not turn into an ordinary teleport hold.
+        game.tick_server_travel(&mut host);
+        assert!(landing(&host));
+        light(&mut game, chunk);
+        game.tick_server_travel(&mut host);
+        assert!(!game.on_server_trip(CONN));
+        assert!(!landing(&host));
+        if personal {
+            assert_eq!(host.hub.guests[0].position, [FAR, 150.1, FAR]);
+            assert_eq!(
+                [host.hub.guests[0].yaw, host.hub.guests[0].pitch],
+                [93.0, 12.0]
+            );
+        }
+        let at = host.hub.guests[0].position;
+        let hit = |game: &mut Game<'_>| game.mob_hits_player(6.0, at, "minecraft:player_attack");
+        assert_eq!(game.as_guest(&mut host, CONN, hit), Some(true));
+        let health = host.hub.guests[0].health;
+        game.add_item_entity(ItemStack::new("minecraft:stick", 1), at, Some([0.0; 3]), 0);
+        for _ in 0..20 {
+            game.tick_guests(&mut host);
+        }
+        assert!(game.dropped.is_empty(), "pickups resume after arrival");
+        assert!(
+            host.hub.guests[0]
+                .inventory
+                .iter()
+                .flatten()
+                .any(|s| &*s.item == "minecraft:stick" && s.count == 1)
+        );
+        assert_eq!(game.as_guest(&mut host, CONN, hit), Some(true));
+        assert!(
+            host.hub.guests[0].health < health,
+            "the damage cooldown must expire"
+        );
+    }
+}
+
+#[test]
+#[ignore = "prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_world_spawn_search_keeps_movement_held_between_candidate_chunks() {
+    use horizon_client::world_spawn::PlayerSpawnFinder;
+
+    let (mut game, mut host, _rx) = server();
+    game.level.world_spawn = Some([0, 100, 0]);
+    game.world_spawn_trip(CONN);
+    // A deterministic search starts at (-64, -64), outside the lit 5x5. This is the
+    // same search state a previous arrival pass keeps when a candidate is missing.
+    game.server_trips[0].finder = Some(PlayerSpawnFinder::new([0, 100, 0], 64, |_| 0));
+    for _ in 0..2 {
+        game.tick_server_travel(&mut host);
+        assert!(game.on_server_trip(CONN));
+        assert!(
+            landing(&host),
+            "waiting for another candidate must not release movement"
+        );
+    }
+    // No column has a floor, so after loading the search area it falls back to the
+    // original suggestion. The pending search must complete and release movement.
+    for x in -4..=4 {
+        for z in -4..=4 {
+            game.streaming
+                .insert_remote(&mut game.world, Chunk::empty(x, z));
+        }
+    }
     game.tick_server_travel(&mut host);
     assert!(!game.on_server_trip(CONN));
     assert!(!landing(&host));

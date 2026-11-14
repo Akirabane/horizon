@@ -81,8 +81,7 @@ pub struct Seen {
     pub xp: i32,
     /// What other villagers read of a villager's state and brain.
     pub villager: Option<Arc<villager::Seen>>,
-    /// `MAX_HEALTH`, `JUMP_STRENGTH` and `MOVEMENT_SPEED` base values (a
-    /// horse's breeding stock).
+    /// `MAX_HEALTH`, `JUMP_STRENGTH` and `MOVEMENT_SPEED` base values (a horse's breeding stock).
     pub stats: [f64; 3],
     /// `Wolf.isInSittingPose`.
     pub sitting: bool,
@@ -103,6 +102,8 @@ pub struct Seen {
     pub hurt_recently: bool,
     /// `Hoglin.canBeHunted`: an adult hoglin without `CannotBeHunted`.
     pub huntable: bool,
+    /// `Entity.isInvulnerable`: `Invulnerable`, or `invulnerableTime` left.
+    pub invulnerable: bool,
     /// A happy ghast's `isOnStillTimeout` (a player on its back holds it).
     pub still: bool,
     /// `Entity.isVehicle`: something rides it.
@@ -226,6 +227,7 @@ impl Mob {
             hunted_recently: m.species() == Species::Piglin && m.extra.ints[0] > 0,
             hurt_recently: m.species() == Species::Piglin && m.extra.piglin.hurt,
             huntable: m.species() == Species::Hoglin && !m.is_baby() && !m.extra.cannot_be_hunted,
+            invulnerable: m.is_invulnerable(),
         }
     }
 }
