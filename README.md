@@ -30,20 +30,20 @@
   <img src="docs/media/readme/valley.webp" alt="A river valley with a plains village, savanna hills and a cherry grove, seen from above with a long view distance" width="100%">
 </p>
 
-<table>
-  <tr>
-    <td width="50%" valign="top"><img src="docs/media/readme/survival.webp" alt="Survival in a village square: two villagers, flowers, the hotbar, health and hunger"><br><b>Your worlds, the same rules</b><br>Survival, creative, hardcore and spectator. Vanilla saves open as they are.</td>
-    <td width="50%" valign="top"><img src="docs/media/readme/multiplayer.webp" alt="Two players in a LAN world: the other player's name tag and the player list"><br><b>Play together</b><br>Join vanilla and Horizon servers, open a world to LAN, or invite friends with a code.</td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top"><img src="docs/media/readme/sunset.webp" alt="Sunset behind a cherry grove on a hill, with a river below"><br><b>See farther</b><br>Distant terrain up to 1,024 chunks, HDR and controller support.</td>
-    <td width="50%" valign="top"><img src="docs/media/readme/nether.webp" alt="A crimson forest in the Nether, with a piglin among the fungi"><br><b>Every dimension</b><br>Vanilla world generation, mobs, villagers, raids and redstone.</td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top"><img src="docs/media/readme/launcher-mods.webp" alt="The launcher's Mods page: Horizon's mod registry, modpacks, resource packs, shader packs and data packs"><br><b>Mods in one click</b><br>Resource, data and shader packs, content mods and native Rust mods.</td>
-    <td width="50%" valign="top"><img src="docs/media/readme/launcher-home.webp" alt="The launcher's Home page: the Horizon instance, Play, the version picker and the friend invite field"><br><b>One launcher</b><br>Installs the game, keeps it up to date and hosts your server.</td>
-  </tr>
-</table>
+<p align="center">
+  <img src="docs/media/readme/card-worlds.webp" alt="Your worlds, same rules: survival, creative and hardcore, and your saves open as they are" width="49%">
+  <img src="docs/media/readme/card-together.webp" alt="Play together: vanilla and Horizon servers, LAN, or a code from a friend" width="49%">
+</p>
+
+<p align="center">
+  <img src="docs/media/readme/card-farther.webp" alt="See farther: terrain up to 1,024 chunks away, HDR and controllers" width="49%">
+  <img src="docs/media/readme/card-dimensions.webp" alt="Every dimension: vanilla world generation, mobs, villagers and redstone" width="49%">
+</p>
+
+<p align="center">
+  <img src="docs/media/readme/card-mods.webp" alt="Mods in one click: packs, content mods and native Rust mods" width="49%">
+  <img src="docs/media/readme/card-launcher.webp" alt="One launcher: installs the game, updates it and hosts your server" width="49%">
+</p>
 
 <p align="center">
   <img src="docs/media/readme/signs-row.webp" alt="A voxel dragon in welding goggles points at three wooden signs: 3.5x faster start than modded Java, 38 percent more FPS than Java with Sodium, and a mod API to port your mods to Rust" width="100%">
