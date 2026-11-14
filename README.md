@@ -11,10 +11,6 @@
   <a href="#contributing"><b>Contributing</b></a>
 </p>
 
-<p align="center">
-  <a href="#project-status"><img src="https://img.shields.io/badge/player--visible%20gaps-0%20open-F0795A" alt="Player-visible gaps open"></a>
-</p>
-
 # Horizon
 
 Minecraft: Java Edition 26.3, rewritten from scratch in Rust. The same rules and the same terrain, your own worlds, in one native program without Java.
@@ -60,18 +56,6 @@ You need a Microsoft account that owns Minecraft: Java Edition. Horizon contains
 - **Servers.** Host one from the launcher, or run `horizon-server` on a VPS with no Java. See the [hosting guide](https://playhorizon.dev/docs/hosting).
 - **Agent control.** Scripts and AI agents can play through `horizon-ctl`. See the [agent guide](docs/native-client.md#agent-control-horizon-ctl-and-mcp).
 
-## Performance
-
-Horizon v0.2.97 against Java Edition on the same machine and world, Ryzen 7 9800X3D with an RTX 5080 at 1280x720. Mean frames per second over four scenes:
-
-| Render distance | Horizon | Vanilla 26.3 | Vanilla + mods |
-| --- | ---: | ---: | ---: |
-| 8 chunks | 3,289 | 2,437 | 2,375 |
-| 16 chunks | 2,074 | 1,661 | 1,586 |
-| 32 chunks | 1,207 | 1,031 | 879 |
-
-Horizon reaches the title screen in 2.9 to 3.2 seconds, against 7.5 to 7.7 for vanilla. The mods are Sodium, Lithium, FerriteCore and ImmediatelyFast. The [full report](benchmarks/perf/windows-9800x3d-5080-2026-10-29.md) has every scene and the [benchmark guide](docs/benchmark.md) the method.
-
 ## Build from source
 
 You need Rust 1.90 or later, Python 3.11 or later, JDK 25 and your own copy of Java Edition 26.3 with its server jar. On Linux, also `libasound2-dev` and `libudev-dev`.
@@ -94,31 +78,6 @@ python3 tools/pr_ready.py
 ```
 
 Questions go to [Discord](https://discord.gg/playhorizon), and [GOVERNANCE.md](GOVERNANCE.md) explains how the project is run.
-
-## Project status
-
-**Player-visible gaps: 0 open** of the 833 the [port ledger](tools/port_ledger.py) found, reading every vanilla 26.3 method against Horizon's code: vanilla behaviour a player would notice that Horizon doesn't have yet. By area: Animals [0](https://github.com/horizon-rust/horizon/issues/3512); Monsters and bosses [0](https://github.com/horizon-rust/horizon/issues/3513); Entities, projectiles, vehicles and decorations [0](https://github.com/horizon-rust/horizon/issues/3514); Items, enchantments and inventories [0](https://github.com/horizon-rust/horizon/issues/3515); Blocks, redstone and fluids [0](https://github.com/horizon-rust/horizon/issues/3516); World, world generation and saves [0](https://github.com/horizon-rust/horizon/issues/3517); Screens, HUD and client packets [0](https://github.com/horizon-rust/horizon/issues/3518); Entity and block rendering, models [0](https://github.com/horizon-rust/horizon/issues/3519); Server and players on the server [0](https://github.com/horizon-rust/horizon/issues/3520); Mob AI, villagers and raids [0](https://github.com/horizon-rust/horizon/issues/3521). This number goes down as gaps close (`tools/parity_gaps.py`); the table below says what the harnesses compare.
-
-### What the harnesses compare
-
-Every subsystem has differential harnesses that compare Horizon with vanilla. A score of 1 means they cover it and pass. The [status page](docs/status.md) lists what each one compares, and [known issues](docs/known-issues.md) lists what players still run into.
-
-| Subsystem | Score | Main gaps |
-| --- | ---: | --- |
-| Window, input and game loop | 1 | None |
-| Assets and resources | 1 | None |
-| Network protocol and multiplayer | 1 | None |
-| Chunk storage and palettes | 1 | None |
-| Section meshing | 1 | None |
-| Rendering | 1 | None |
-| Lighting | 1 | None |
-| World generation | 1 | None |
-| Region files and saves | 1 | None |
-| Entities and physics | 1 | None |
-| Interaction and inventory | 1 | None |
-| Menus, HUD and chat | 1 | None |
-| Audio | 1 | None |
-| Block behaviours and ticking | 1 | None |
 
 ## Licence
 
