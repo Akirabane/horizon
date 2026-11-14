@@ -65,17 +65,11 @@ pub(super) fn projectile_predicate_supported(tag: &horizon_world::nbt::Tag) -> b
 }
 /// `InventoryScreen.containerTick`: a survival inventory left open when the
 /// player gains infinite materials becomes the creative one, so the player
-/// stays in a menu. A spectator's inventory is closed (`Playing`), which is
-/// what Horizon did for every mode before; vanilla has no spectator branch
-/// and leaves it open.
-fn inventory_after_mode(screen: Screen, creative: bool, spectator: bool) -> Screen {
-    if screen != Screen::Inventory {
-        return screen;
-    }
-    if creative {
+/// stays in a menu. Vanilla has no other branch: a spectator's open inventory
+/// stays open too.
+fn inventory_after_mode(screen: Screen, creative: bool) -> Screen {
+    if screen == Screen::Inventory && creative {
         Screen::Creative
-    } else if spectator {
-        Screen::Playing
     } else {
         screen
     }
@@ -86,7 +80,7 @@ impl Game<'_> {
     /// open follows the mode. (`CreativeModeInventoryScreen.containerTick`, the way back
     /// to survival, is not ported yet.)
     fn mode_changed_under_inventory(&mut self) {
-        match inventory_after_mode(self.screen, self.creative, self.spectator()) {
+        match inventory_after_mode(self.screen, self.creative) {
             Screen::Creative => {
                 if let Some(c) = self.carried.take() {
                     let _ = self.give(c);
@@ -377,13 +371,11 @@ mod tests {
     /// screen is left where it is.
     #[test]
     fn a_survival_inventory_becomes_the_creative_one() {
-        assert!(inventory_after_mode(Screen::Inventory, true, false) == Screen::Creative);
-        let stays = inventory_after_mode(Screen::Inventory, false, false);
+        assert!(inventory_after_mode(Screen::Inventory, true) == Screen::Creative);
+        let stays = inventory_after_mode(Screen::Inventory, false);
         assert!(stays == Screen::Inventory, "survival keeps its inventory");
-        // A spectator's inventory is closed, which is what Horizon did for
-        // both before; vanilla has no spectator branch and leaves it open.
-        let closed = inventory_after_mode(Screen::Inventory, false, true);
-        assert!(closed == Screen::Playing);
+        // Vanilla's only branch is `hasInfiniteMaterials`: a spectator's open
+        // inventory stays open.
         for screen in [
             Screen::Playing,
             Screen::Creative,
@@ -391,7 +383,7 @@ mod tests {
             Screen::Stats,
             Screen::Advancements,
         ] {
-            assert!(inventory_after_mode(screen, true, false) == screen);
+            assert!(inventory_after_mode(screen, true) == screen);
         }
     }
 

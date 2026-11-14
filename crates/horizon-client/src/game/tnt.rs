@@ -668,6 +668,10 @@ impl Game<'_> {
             self.view_scale(),
         );
         for t in &self.tnts {
+            // LevelExtractor: the camera entity is not drawn from its own eyes.
+            if self.hides_as_camera(t.id) {
+                continue;
+            }
             // EntityRenderer.shouldRender.
             if !self.standing_entity_in_view(
                 camera,
