@@ -4062,10 +4062,11 @@ impl Game<'_> {
                     }
                     (None, None) => None,
                 };
+                // `ClientPacketListener.random`, the listener's own stream: a
+                // pickup pitch is never a draw of the level's.
                 if let Some(o) = orb_at {
-                    let pitch = (self.world.random.next_float() - self.world.random.next_float())
-                        * 0.35
-                        + 0.9;
+                    let mut r = horizon_client::random_source::create();
+                    let pitch = (r.next_float() - r.next_float()) * 0.35 + 0.9;
                     self.audio.play(
                         "minecraft:entity.experience_orb.pickup",
                         Some([o.x, o.y, o.z]),
@@ -4073,10 +4074,8 @@ impl Game<'_> {
                         pitch,
                     );
                 } else if let Some(at) = at {
-                    let pitch = ((self.world.random.next_float() - self.world.random.next_float())
-                        * 0.7
-                        + 1.0)
-                        * 2.0;
+                    let mut r = horizon_client::random_source::create();
+                    let pitch = ((r.next_float() - r.next_float()) * 0.7 + 1.0) * 2.0;
                     self.audio
                         .play("minecraft:entity.item.pickup", Some(at), 0.2, pitch);
                 }
