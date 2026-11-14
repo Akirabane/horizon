@@ -29,6 +29,17 @@ fn set_key(tag: &mut Tag, key: &str, value: Tag) {
         c.insert(JavaString::from(key), value);
     }
 }
+/// `SummonCommand.spawnEntity`'s name for a kind no command target stands for:
+/// its entity type's. An item is the exception: `EntityType`'s factory leaves
+/// `ItemStack.EMPTY`, which `ItemEntity.readAdditionalSaveData` discards, and
+/// `ItemEntity.getName` reads that empty stack's `getItemName` — an empty
+/// component, not the type's name.
+pub(super) fn summon_type_name(kind: &str) -> Text {
+    if kind.trim_start_matches("minecraft:") == "item" {
+        return Text::empty();
+    }
+    Text::translate(&super::entity_name_key(kind), &[])
+}
 /// `EntityType.loadEntityRecursive` snaps every entity of the stack,
 /// passengers included, to the position (`/summon`, `native_summon`).
 pub(in crate::game) fn place_summoned(tag: &mut Tag, pos: [f64; 3]) {
