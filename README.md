@@ -41,8 +41,8 @@
 </p>
 
 <p align="center">
-  <img src="docs/media/readme/panel-mods.webp" alt="Mods in one click: packs, content mods and native Rust mods" width="49%">
-  <img src="docs/media/readme/panel-launcher.webp" alt="One launcher: installs the game, updates it and hosts your server" width="49%">
+  <img src="docs/media/readme/panel-terrain.webp" alt="Same terrain: vanilla world generation, here a savanna village from above" width="49%">
+  <img src="docs/media/readme/panel-mobs.webp" alt="Same mobs: attributes, spawn rules and mob AI match vanilla, here a baby piglin" width="49%">
 </p>
 
 <p align="center">
