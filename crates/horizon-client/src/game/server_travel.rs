@@ -211,6 +211,7 @@ impl Game<'_> {
             placed: false,
             hold: true,
             left: None,
+            consume: false,
         });
     }
     /// Before the arrivals: a hold follows the player where a mod sent them (`native_player_teleport` may cancel
@@ -777,7 +778,10 @@ impl Game<'_> {
         let anchor = self.is_anchor(self.world.block(x, y, z));
         match self.find_respawn_and_use(config, consume) {
             Ok(Some((at, yaw, pitch))) => {
-                if consume && !config.forced && anchor {
+                if consume && anchor {
+                    // PlayerList.respawn: the deplete sound has no `forced`
+                    // test, so a point `/spawnpoint` kept plays it too; a
+                    // return from the End credits keeps all data and skips it.
                     let [x, y, z] = config.pos.map(f64::from);
                     self.audio.play(
                         "minecraft:block.respawn_anchor.deplete",
