@@ -182,13 +182,13 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
           rustup default stable
           echo "WGPU_BACKEND=dx12" >> "$GITHUB_ENV"
-      - name: Install Rust toolchain and the ALSA and udev headers the client links against
+      - name: Install Rust toolchain, the ALSA and udev headers the client links against, and the mold linker
         if: steps.rust.outputs.required != 'false'
         env:
           HOSTED: ${{ runner.environment == 'github-hosted' }}
         run: |
           if [ "$HOSTED" = true ]; then
-            sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev mold
           fi
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       # Dependencies, and for pull requests the workspace's own build too, saved from main's runs (pull requests read
@@ -232,6 +232,13 @@ jobs:
           echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
           echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
           if [ "$WRITE" != true ]; then echo "SCCACHE_GHA_RW_MODE=READ_ONLY" >> "$GITHUB_ENV"; fi
+      # The mold linker, GitHub's runners only (installed above): linking the test binaries was a large part of this
+      # job. Rust uses its own lld on x86_64 Linux by default; -linker-features=-lld turns that off so mold's
+      # -fuse-ld applies. Set after rust-cache, whose key hashes the RUST* variables, and the same on every event so
+      # sccache's hashes match between main and pull requests.
+      - name: Link with mold
+        if: steps.rust.outputs.required != 'false' && runner.environment == 'github-hosted'
+        run: echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C linker-features=-lld -C link-arg=-fuse-ld=mold" >> "$GITHUB_ENV"
       # Libraries, binaries and integration tests, then doc tests: not the ~275 examples, which verify-lint's clippy
       # type-checks and the parity job builds and runs (they were most of this step's build and link time).
       # cargo test --locked, not nextest: nextest's process per test reloads each binary's shared tables for every test, and on
