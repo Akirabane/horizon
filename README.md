@@ -46,6 +46,16 @@
 </p>
 
 <p align="center">
+  <img src="docs/media/readme/panel-speed.webp" alt="Speed built in: faster than Java with performance mods, with no mods installed" width="49%">
+  <img src="docs/media/readme/panel-splitscreen.webp" alt="On the roadmap: splitscreen" width="49%">
+</p>
+
+<p align="center">
+  <img src="docs/media/readme/panel-browser.webp" alt="On the roadmap: play in your browser" width="49%">
+  <img src="docs/media/readme/panel-mobile.webp" alt="On the roadmap: Android and iOS, with mods" width="49%">
+</p>
+
+<p align="center">
   <img src="docs/media/readme/signs-row.webp" alt="A voxel dragon in welding goggles points at three wooden signs: 3.5x faster start than modded Java, 38 percent more FPS than Java with Sodium, and a mod API to port your mods to Rust" width="100%">
 </p>
 
