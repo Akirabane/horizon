@@ -46,13 +46,13 @@
 </table>
 
 <p align="center">
-  <img src="docs/media/readme/mascot-start.webp" alt="A voxel character holding a sign: 3.5x faster start than modded Java" height="300">
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="docs/media/readme/dragon-mods.webp" alt="A voxel inventor dragon holding a sign: mod API ready, port your mods to Rust" height="300">
+  <img src="docs/media/readme/sign-start.png" alt="A wooden sign: 3.5x faster start than modded Java" width="260">
+  <img src="docs/media/readme/sign-fps.png" alt="A wooden sign: 38 percent more FPS than Java with Sodium" width="260">
+  <img src="docs/media/readme/sign-mods.png" alt="A wooden sign: mod API, port your mods to Rust" width="260">
 </p>
 
 <p align="center">
-  <sub>To the title screen in about 3 seconds, against about 11 for Java with Sodium, Lithium, FerriteCore and ImmediatelyFast.</sub>
+  <sub>Against Java Edition with Sodium, Lithium, FerriteCore and ImmediatelyFast on a Ryzen 7 9800X3D with an RTX 5080: the title screen in about 3 seconds instead of 11, and 31 to 38 percent more frames per second across render distances.</sub>
 </p>
 
 <h2 align="center">Made by the Horizon Team</h2>
