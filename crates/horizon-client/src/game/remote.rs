@@ -69,6 +69,9 @@ mod remote_attributes;
 #[path = "remote_tables.rs"]
 mod tables;
 
+#[path = "remote_chat_queue.rs"]
+mod chat_queue;
+
 type BuiltinCache = Vec<(std::path::PathBuf, Arc<Builtin>)>;
 static BUILTIN: std::sync::Mutex<BuiltinCache> = std::sync::Mutex::new(Vec::new());
 
@@ -235,7 +238,7 @@ fn menu_title(tag: &Tag) -> horizon_client::text::Text {
 /// A player message Chat Delay holds back, its signature and trust level,
 /// what the narrator says of it once it shows, and who sent it in which
 /// chat type, for mods told when it shows (`ClientChatReceivedEvent`).
-struct QueuedChat {
+pub(super) struct QueuedChat {
     line: horizon_client::text::Text,
     signature: Option<Signature>,
     trust: ChatTrust,
@@ -1993,7 +1996,7 @@ impl Game<'_> {
 
     /// A message's `accept`: shown, it is narrated (`narrateChatMessage`) and
     /// starts the Chat Delay wait again.
-    fn accept_chat(&mut self, chat: QueuedChat) -> bool {
+    pub(super) fn accept_chat(&mut self, chat: QueuedChat) -> bool {
         let signature = chat.signature;
         let shown = self.player_chat_line(chat);
         if let Some(signature) = &signature {
@@ -2057,70 +2060,6 @@ impl Game<'_> {
         let mut cancel = false;
         self.native_client_chat_received(system, overlay, sender, name, line, &mut cancel);
         !cancel
-    }
-
-    /// `ChatListener.messageDelay`: Chat Delay in milliseconds, as Java
-    /// truncates it.
-    fn chat_delay_ms(&self) -> i64 {
-        (self.settings.chat_delay * 1000.0) as i64
-    }
-
-    /// `ChatListener.tick`: while paused the wait does not run down; with no
-    /// Chat Delay the queue flushes; otherwise the next message the chat takes
-    /// shows once the delay has passed since the last shown one.
-    pub(super) fn tick_chat_queue(&mut self) {
-        let delay = self.chat_delay_ms();
-        // Minecraft.isPaused: a single-player pausing screen, not every pause menu.
-        if self.pause {
-            if delay > 0
-                && let Some(r) = self.remote.as_mut()
-            {
-                r.chat_previous = r.chat_previous.map(|t| t + Duration::from_millis(50));
-            }
-            return;
-        }
-        if delay == 0 {
-            if self
-                .remote
-                .as_ref()
-                .is_some_and(|r| !r.chat_queue.is_empty())
-            {
-                self.flush_chat_queue();
-            }
-            return;
-        }
-        let ready = self.remote.as_ref().is_some_and(|r| {
-            r.chat_previous
-                .is_none_or(|t| t.elapsed() >= Duration::from_millis(delay as u64))
-        });
-        if !ready {
-            return;
-        }
-        // A message the Chat option hides is dropped and the next one is tried,
-        // until one shows.
-        while let Some(chat) = self.remote.as_mut().and_then(|r| r.chat_queue.pop_front()) {
-            if self.accept_chat(chat) {
-                break;
-            }
-        }
-    }
-
-    /// `ChatListener.flushQueue`: every held-back message shows now, and the
-    /// delay starts over.
-    fn flush_chat_queue(&mut self) {
-        let Some(queue) = self
-            .remote
-            .as_mut()
-            .map(|r| std::mem::take(&mut r.chat_queue))
-        else {
-            return;
-        };
-        for chat in queue {
-            self.accept_chat(chat);
-        }
-        if let Some(r) = self.remote.as_mut() {
-            r.chat_previous = None;
-        }
     }
 
     /// The minecarts the server sent, for the control socket's `status`
@@ -3029,11 +2968,12 @@ impl Game<'_> {
                 d.on_ground = on_ground;
                 return;
             }
-            if let Some(f) = self.falling.iter_mut().find(|f| f.id == id as u32) {
+            // A newly spawned block or TNT is at the back of its list.
+            if let Some(f) = self.falling.iter_mut().rev().find(|f| f.id == id as u32) {
                 f.position = at;
                 return;
             }
-            if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id as u32) {
+            if let Some(t) = self.tnts.iter_mut().rev().find(|t| t.id == id as u32) {
                 t.position = at;
                 t.on_ground = on_ground;
                 return;
@@ -3409,20 +3349,7 @@ impl Game<'_> {
                 self.capture(true);
             }
             C::PlayerPosition(p) => self.remote_teleport(&p)?,
-            C::PlayerRotation(p) => {
-                self.yaw = if p.relative_yaw {
-                    self.yaw + p.yaw
-                } else {
-                    p.yaw
-                };
-                self.pitch = (if p.relative_pitch {
-                    self.pitch + p.pitch
-                } else {
-                    p.pitch
-                })
-                .clamp(-90.0, 90.0);
-                self.snap_player_model_pitch();
-            }
+            C::PlayerRotation(p) => self.remote_rotation(&p),
             C::PlayerLookAt(p) => self.remote_look_at(&p),
             // ClientCommonPacketListenerImpl.handlePostEffects.
             C::PostEffects(p) => self.post_effects = p.effects,
@@ -3576,6 +3503,7 @@ impl Game<'_> {
                     p.id as u32,
                     horizon_client::lan::playerdata::uuid_ints(p.uuid),
                 );
+                let replace = self.tracks_remote_entity(p.id);
                 self.spawn_entity(p.id, &kind, p.position, rotation);
                 if let Some(r) = self.remote.as_mut() {
                     r.cart_lerps.remove(&p.id);
@@ -3588,14 +3516,7 @@ impl Game<'_> {
                     (rotation[0], rotation[1]),
                     p.data,
                 ) {
-                    self.spawn_remote_projectile(
-                        p.id,
-                        &kind,
-                        p.position,
-                        (rotation[0], rotation[1]),
-                        p.velocity,
-                        p.data,
-                    );
+                    self.spawn_added_projectile(&p, &kind, (rotation[0], rotation[1]), replace);
                 }
                 // Entity.recreateFromPacket: objects must exist before applying motion.
                 self.remote_motion(p.id, p.velocity);
@@ -3993,7 +3914,7 @@ impl Game<'_> {
                                     && let Some(stack) = self.stack_in(slot).cloned()
                                 {
                                     self.use_duration = self.use_duration(&stack);
-                                    self.use_ticks_set = false;
+                                    self.use_start = super::using_item::UseStart::of(stack);
                                 }
                             }
                             _ => {}
@@ -4803,7 +4724,7 @@ impl Game<'_> {
                     // CrafterBlockEntity.containerData.
                     Some(BlockEntity::Crafter(c)) => match usize::try_from(p.id) {
                         Ok(k @ 0..9) => c.disabled[k] = v == 1,
-                        Ok(9) => c.triggered = v == 1,
+                        Ok(9) => c.triggered = v,
                         _ => {}
                     },
                     // BrewingStandBlockEntity.dataAccess.
@@ -5898,14 +5819,16 @@ impl Game<'_> {
     fn remote_motion(&mut self, id: i32, velocity: [f64; 3]) {
         self.remote_dragon_motion(id, velocity);
         let v = Vec3::new(velocity[0], velocity[1], velocity[2]);
+        // `falling` and `tnts` are searched from the back: AddEntity calls this right after
+        // appending the block or TNT, so a spawn doesn't walk the whole list.
         if let Some(m) = self.mob_index.get_mut(&mut self.mobs, id as u32) {
             // Squid.aiStep derives its body pitch and roll from network motion.
             m.velocity = v;
         } else if let Some(d) = self.dropped.iter_mut().find(|d| d.id == id as u32) {
             d.velocity = v;
-        } else if let Some(f) = self.falling.iter_mut().find(|f| f.id == id as u32) {
+        } else if let Some(f) = self.falling.iter_mut().rev().find(|f| f.id == id as u32) {
             f.velocity = v;
-        } else if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id as u32) {
+        } else if let Some(t) = self.tnts.iter_mut().rev().find(|t| t.id == id as u32) {
             t.velocity = v;
         } else if let Some(o) = self.orbs.iter_mut().find(|o| o.id == id as u32) {
             o.velocity = v;
@@ -6603,18 +6526,11 @@ impl Game<'_> {
                 // (LocalPlayer.playSound); the server's copy skips this player
                 // (Player.playSound).
                 horizon_client::motion::MotionEvent::Fall(
-                    horizon_client::landing::FallEvent::Sound {
-                        sound,
-                        volume,
-                        pitch,
-                        ..
-                    },
+                    event @ (horizon_client::landing::FallEvent::Sound { .. }
+                    | horizon_client::landing::FallEvent::BlockFallSound { .. }),
                 ) => {
-                    if let Some(name) = sound
-                        .player_fall_sound()
-                        .or_else(|| sound.honey_landing_sound())
-                    {
-                        self.audio.play(name, Some(feet), volume, pitch);
+                    if let Some((name, volume, pitch)) = event.heard_fall_sound(self.res.facts()) {
+                        self.audio.play(&name, Some(feet), volume, pitch);
                     }
                 }
                 _ => {}
@@ -8588,9 +8504,7 @@ impl Game<'_> {
             .clone();
         let held = held?;
         let above = self.world.block(hit.pos[0], hit.pos[1] + 1, hit.pos[2]);
-        let under_water = registry
-            .state(above)
-            .is_some_and(|s| s.name == "minecraft:water");
+        let under_water = super::cauldrons::is_under_water(self.res.facts(), above);
         let removes_dye = cauldron::removes_dye(self.items(), &held.item);
         let mut hand = DryHand {
             creative: self.creative,

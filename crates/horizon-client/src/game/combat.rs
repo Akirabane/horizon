@@ -386,6 +386,9 @@ impl Game<'_> {
                         "resisted" => self.award_custom_stat("damage_resisted", *amount),
                         "absorbed" => self.award_custom_stat("damage_absorbed", *amount),
                         "blocked" => self.award_custom_stat("damage_blocked_by_shield", *amount),
+                        // ServerPlayer.jumpFromGround: a ground jump, counted
+                        // with the other statistics the tick's events carry.
+                        "jump" => self.award_custom_stat("jump", *amount),
                         _ => {}
                     }
                     continue;
