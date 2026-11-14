@@ -491,6 +491,9 @@ impl Game<'_> {
                 .is_some_and(|m| m.contains(&*s.item))
         });
         let recipes = world_recipes!(self);
+        // `ChiseledBookShelfBlockEntity.setItem`: the slot written is the one
+        // `updateState` takes, even when its occupancy does not change.
+        let mut shelf_slot = None;
         match self.world.block_entities.get_mut(&key) {
             Some(BlockEntity::Furnace(f)) if i == 0 => f.set_input(recipes, stack),
             Some(BlockEntity::Furnace(f)) => {
@@ -499,6 +502,15 @@ impl Game<'_> {
                 return true;
             }
             Some(BlockEntity::ChiseledBookshelf(_)) if !book => return true,
+            Some(BlockEntity::ChiseledBookshelf(b)) => {
+                // A book put in, or a stack taken out: `removeItem` only
+                // updates the state when it found something.
+                let had_book = b.items[i].is_some();
+                b.items[i] = stack;
+                if had_book || b.items[i].is_some() {
+                    shelf_slot = Some(i);
+                }
+            }
             Some(BlockEntity::Jukebox(_)) => {
                 self.jukebox_set_item(p, stack);
                 return true;
@@ -515,6 +527,9 @@ impl Game<'_> {
             }
             Some(entity) => entity.slots_mut()[i] = stack,
             None => return false,
+        }
+        if let Some(slot) = shelf_slot {
+            self.chiseled_bookshelf_update_state(p, slot);
         }
         self.container_changed(key);
         true
