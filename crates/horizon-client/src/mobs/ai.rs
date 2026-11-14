@@ -31,6 +31,9 @@ mod fall_flying_tests;
 mod glide;
 use glide::update_fall_flying;
 #[cfg(test)]
+#[path = "cramming_tests.rs"]
+mod cramming_tests;
+#[cfg(test)]
 #[path = "wet_fire_tests.rs"]
 mod wet_fire_tests;
 
@@ -1734,13 +1737,15 @@ fn hurt_teleports(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
 impl Mob {
     /// LivingEntity.isPushable (and the push it takes from `Entity.push(Entity)`):
     /// bats and shulkers are never moved by others, nor is a mob on a climbable
-    /// block (`onClimbable`, cached by the last tick).
+    /// block (`onClimbable`, cached by the last tick), nor a ridden horse
+    /// (`AbstractHorse.isPushable` is `!isVehicle`).
     pub fn pushable(&self) -> bool {
         self.alive()
             && !matches!(self.species(), Species::Bat | Species::Shulker)
             && !self.on_climbable
             && (self.species() != Species::Creaking || super::creaking::can_move(self))
             && (self.species() != Species::Warden || !super::warden::digging_or_emerging(self))
+            && !(super::equine::is_equine(self.species()) && super::equine::is_vehicle(self))
     }
 }
 /// LivingEntity.onClimbable for the pusher (Spider.onClimbable: climbing a wall).
@@ -1766,13 +1771,8 @@ fn push_entities(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         return;
     }
     let bounds = m.bounds();
-    // The pusher's own isPushable, checked by `e.push(this)` before moving it.
-    let self_pushable = m.alive()
-        && m.species() != Species::Shulker
-        && !m.on_climbable
-        && (m.species() != Species::Creaking || super::creaking::can_move(m))
-        && (m.species() != Species::Warden || !super::warden::digging_or_emerging(m))
-        && !super::equine::is_vehicle(m);
+    // The pusher's own isPushable and isVehicle, checked by `e.push(this)`.
+    let self_pushable = m.pushable() && !super::equine::is_vehicle(m);
     let mut targets = super::world::take_push_targets();
     if let Some(p) = &w.player
         // Entity.push: passengers of the same vehicle never push each other.
@@ -3953,7 +3953,7 @@ mod same_vehicle_push_tests {
             Vec::<u32>::new(),
             "the cow pushes the ridden horse"
         );
-        assert!(cow.velocity.x > 0.0, "the ridden horse pushes the cow away");
+        assert_eq!(cow.velocity, Vec3::ZERO, "a ridden horse is not pushable");
 
         let (horse, mut cow) = pair(false).unwrap();
         let mut events = Vec::new();
