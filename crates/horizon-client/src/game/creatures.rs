@@ -1384,7 +1384,7 @@ impl Game<'_> {
                 .map(|e| e.0.trim_start_matches("minecraft:"))
                 .collect();
             let bounds = m.bounds();
-            self.effects_on_death(&names, bounds, false, Some(m.id), Some(&mut m.random));
+            self.effects_on_death(&names, bounds, m.silent, Some(m.id), Some(&mut m.random));
         }
         self.creatures.deferred_hits = true;
         let event_result = self.handle_mob_events_reusable(&mut events);
