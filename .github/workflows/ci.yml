@@ -189,15 +189,27 @@ jobs:
       # type-checks and the parity job builds and runs (they were most of this step's build and link time).
       # cargo test --locked, not nextest: nextest's process per test reloads each binary's shared tables for every test, and on
       # these 4-core runners it was no faster (#4978).
+      # A pull request tests the crates it changes, the crates that depend on them, and the crates whose tests read
+      # its files (tools/ci/test_scope.py); a change outside every crate tests the whole workspace. main's pushes
+      # always test the whole workspace, so a missed crate shows on main.
+      - name: Which crates must the Rust tests cover?
+        if: github.event_name == 'pull_request' && steps.rust.outputs.required != 'false'
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 tools/ci/test_scope.py "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
       - name: Test Rust core and voxel kernel correctness
         if: steps.rust.outputs.required != 'false'
+        env:
+          PACKAGES: ${{ steps.scope.outputs.packages }}
         run: |
-          cargo +stable test --locked --workspace --lib --bins --tests
+          cargo +stable test --locked ${PACKAGES:---workspace} --lib --bins --tests
           # The full content-root tests (#[ignore]d: minutes each on a laptop). The same build as above; they need the
           # prepared vanilla data, so without it they pass at once. Keep the target selection identical to avoid
           # recompiling the workspace with a different dependency graph.
-          cargo +stable test --locked --workspace --lib --bins --tests mod_content::tests:: -- --ignored
-          cargo +stable test --locked --workspace --doc
+          cargo +stable test --locked ${PACKAGES:---workspace} --lib --bins --tests mod_content::tests:: -- --ignored
+          cargo +stable test --locked ${PACKAGES:---workspace} --doc
   verify:
     needs: [verify-tree, verify-lint, verify-test]
     if: always()
