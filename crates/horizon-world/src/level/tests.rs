@@ -1426,6 +1426,7 @@ impl World<'_> {
             may_build: true,
             can_eat: true,
             game_master: false,
+            respawn_point: None,
         };
         let hit = horizon_core::geometry::Vec3::new(
             f64::from(pos.x) + 0.5,
@@ -1450,6 +1451,7 @@ impl World<'_> {
             may_build: true,
             can_eat: false,
             game_master: false,
+            respawn_point: None,
         };
         let hit = horizon_core::geometry::Vec3::new(
             f64::from(pos.x) + 0.5,
@@ -1486,6 +1488,7 @@ impl World<'_> {
             may_build: true,
             can_eat: true,
             game_master: false,
+            respawn_point: None,
         };
         let hit = horizon_core::geometry::Vec3::new(
             f64::from(pos.x) + 0.5,
@@ -1540,31 +1543,6 @@ fn use_on_a_block_says_which_branch_answered() {
         w.use_branch(pos, Some("minecraft:bone_meal")),
         (InteractionResult::Pass, UseBranch::ItemOn)
     );
-}
-
-#[test]
-fn glowstone_charges_a_respawn_anchor_up_to_four() {
-    // RespawnAnchorBlock.useItemOn: glowstone on an anchor below 4 charges
-    // charges it and the click ends (SUCCESS), so no glowstone is placed (#3034).
-    let mut w = world!();
-    let pos = BlockPos::new(0, 1, 0);
-    let empty = w.id("respawn_anchor", &[("charges", "0")]);
-    w.put(pos, empty);
-    for charges in 1..=4 {
-        assert_eq!(
-            w.use_item(pos, "minecraft:glowstone"),
-            InteractionResult::Success
-        );
-        assert_eq!(w.prop(pos, "charges"), charges.to_string());
-    }
-    // A full anchor can't be charged: TRY_WITH_EMPTY_HAND, then useWithoutItem
-    // (the respawn point), which leaves the charges alone.
-    w.use_item(pos, "minecraft:glowstone");
-    assert_eq!(w.prop(pos, "charges"), "4");
-    // Anything else on an empty anchor passes, so the item is used instead.
-    w.put(pos, empty);
-    assert_eq!(w.use_item(pos, "minecraft:stone"), InteractionResult::Pass);
-    assert_eq!(w.prop(pos, "charges"), "0");
 }
 
 #[test]
@@ -4099,6 +4077,7 @@ mod barrel;
 mod interact;
 mod pistons;
 mod redstone;
+mod respawn_anchor;
 mod trigger_tests;
 
 /// `ShulkerBoxBlockEntity.doNeighborUpdates`: the neighbours' shape updates
