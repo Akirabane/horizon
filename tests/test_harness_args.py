@@ -55,7 +55,7 @@ class EnsureWorkDirTest(unittest.TestCase):
 
 
 class FreshCaptureHarnessTest(unittest.TestCase):
-    def test_repeated_automatic_runs_preserve_earlier_captures(self):
+    def test_a_passing_automatic_run_removes_its_capture_and_a_failing_one_keeps_it(self):
         for name, folder in [('loot_kill_sheep_state', 'h036'), ('loot_mine_location_block', 'h079'),
                              ('warden_owned_memories', 'h029')]:
             with self.subTest(harness=name), tempfile.TemporaryDirectory() as scratch, contextlib.chdir(scratch):
@@ -63,6 +63,7 @@ class FreshCaptureHarnessTest(unittest.TestCase):
                 legacy.parent.mkdir(parents=True)
                 legacy.write_bytes(b'earlier oracle evidence\n')
                 captures = []
+                mismatch = []
                 driver = types.ModuleType('test_command_exec_parity')
                 driver.corpus_module = types.SimpleNamespace()
 
@@ -71,8 +72,8 @@ class FreshCaptureHarnessTest(unittest.TestCase):
                     directory = harness_args.require_work_dir().resolve()
                     count = json.loads((directory / 'declaration.json').read_text())['records']
                     records = (f'{{"capture":{len(captures) + 1}}}\n' * count).encode()
-                    for output in ['vanilla.jsonl', 'rust.jsonl']:
-                        (directory / output).write_bytes(records)
+                    (directory / 'vanilla.jsonl').write_bytes(records)
+                    (directory / 'rust.jsonl').write_bytes(records.replace(b'}', b',"x":1}') if mismatch else records)
                     captures.append((directory, records))
 
                 driver.main = capture
@@ -87,14 +88,28 @@ class FreshCaptureHarnessTest(unittest.TestCase):
                                 self.assertRaises(SystemExit) as exit:
                             runpy.run_path(str(script), run_name='__main__')
                         self.assertEqual(exit.exception.code, 0)
-                self.assertEqual(len(captures), 3)
+                    # A run whose records differ fails and keeps its capture.
+                    mismatch.append(True)
+                    with mock.patch.object(sys, 'argv', [str(script)]), \
+                            self.assertRaises((AssertionError, SystemExit)) as failed:
+                        runpy.run_path(str(script), run_name='__main__')
+                    self.assertNotEqual(getattr(failed.exception, 'code', 1), 0)
+                self.assertEqual(len(captures), 4)
                 self.assertNotEqual(captures[0][0], captures[1][0])
                 self.assertEqual(captures[2][0], explicit)
                 self.assertEqual(legacy.read_bytes(), b'earlier oracle evidence\n')
-                for directory, records in captures:
-                    self.assertEqual((directory / 'vanilla.jsonl').read_bytes(), records)
-                    self.assertEqual((directory / 'rust.jsonl').read_bytes(), records)
-                    self.assertEqual(json.loads((directory / 'strict-report.json').read_text())['differences'], [])
+                # The passing automatic runs leave nothing behind.
+                self.assertFalse(captures[0][0].exists())
+                self.assertFalse(captures[1][0].exists())
+                # The folder the caller named stays, with what the run wrote.
+                directory, records = captures[2]
+                self.assertEqual((directory / 'vanilla.jsonl').read_bytes(), records)
+                self.assertEqual((directory / 'rust.jsonl').read_bytes(), records)
+                self.assertEqual(json.loads((directory / 'strict-report.json').read_text())['differences'], [])
+                # The failing automatic run's folder stays as evidence.
+                directory, records = captures[3]
+                self.assertEqual((directory / 'vanilla.jsonl').read_bytes(), records)
+                self.assertNotEqual((directory / 'rust.jsonl').read_bytes(), records)
 
 
 if __name__ == '__main__':

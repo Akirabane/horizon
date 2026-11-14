@@ -63,4 +63,4 @@ if __name__=='__main__':
  diffs=[dict(label=o['label'],expected=a,actual=b) for o,a,b in zip(rows,java,native) if a!=b];(build/'strict-report.json').write_text(json.dumps(dict(records=len(rows),passed=len(rows)-len(diffs),differences=diffs),indent=2)+'\n')
  for o,a,b in zip(rows,java,native):
   if o['admission']:assert a==b,('admission',o,a,b)
- print(f'{len(rows)-len(diffs)}/{len(rows)}');sys.exit(bool(diffs))
+ print(f'{len(rows)-len(diffs)}/{len(rows)}');harness_args.finish(build,bool(diffs))
