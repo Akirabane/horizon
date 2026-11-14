@@ -1,7 +1,23 @@
 //! A bucket's aim and target: `getPlayerPOVHitResult(..., SOURCE_ONLY)` for an empty bucket (the block outline or a source fluid, whichever is nearer) and `BucketItem.use`'s place position.
 use super::*;
 
+#[cfg(test)]
+#[path = "filled_bucket_stat_tests.rs"]
+mod filled_bucket_stat_tests;
+
 impl Game<'_> {
+    /// The tail of `BucketItem.use` once `emptyContents` succeeded, after the
+    /// criteria: `player.awardStat(Stats.ITEM_USED.get(this))`, then
+    /// `ItemUtils.createFilledResult(itemStack, player,
+    /// getEmptySuccessItem(itemStack, player))` — a survival bucket becomes an
+    /// empty one, a creative one stays.
+    pub(super) fn bucket_emptied(&mut self, item: &str) {
+        self.award_stat("used", item, 1);
+        if !self.creative {
+            *self.held_mut() = Some(ItemStack::new("minecraft:bucket", 1));
+        }
+    }
+
     /// `getPlayerPOVHitResult(level, player, SOURCE_ONLY)` for an empty
     /// bucket: the block outline or a source fluid, whichever is nearer. A
     /// waterlogged block is a block hit (its outline is the block's, its
