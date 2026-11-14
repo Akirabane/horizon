@@ -372,6 +372,11 @@ impl Game<'_> {
     /// `TypedEntityData.loadInto` is: a spawn egg's data on the mob it spawned.
     pub(in crate::game) fn apply_entity_nbt(&mut self, t: Target, mut tag: Tag) -> R<()> {
         let stale = || err("commands.data.merge.failed", &[]);
+        // `Entity.load` keeps only the fields it reads, so vanilla drops a key it
+        // does not know on `EntityDataAccessor.setData` (and on
+        // `TypedEntityData.loadInto`). `horizon:finalize` is worldgen's, and
+        // `Game::load_mob` would run the finalize it asks for on the next load.
+        strip_finalize_tree(&mut tag);
         // Entity.load does not read Passengers: the riders stay, and so do the
         // passengers the load kept raw (none, when it kept none).
         let kept_passengers = match t {
@@ -1653,6 +1658,11 @@ impl Game<'_> {
         if !matches!(tag, Tag::Compound(_)) {
             return Err(err("argument.nbt.expected.compound", &[]));
         }
+        // SummonCommand.createEntity with an NBT argument passes
+        // `finalize = false`: the mob is what its compound says, and the
+        // `horizon:finalize` marker worldgen leaves on a structure mob is not
+        // the player's to set.
+        strip_finalize_tree(&mut tag);
         set_key(&mut tag, "id", Tag::String(kind.into()));
         // Turtle.readAdditionalSaveData chooses its home before SummonCommand's snapTo.
         // Preserve that load-stage default while the shared loader receives the final Pos.
@@ -1685,6 +1695,22 @@ impl Game<'_> {
             return Err(err("commands.summon.failed.uuid", &[]));
         }
         Ok(target)
+    }
+}
+
+/// `horizon:finalize` off `tag` and off the riders under its `Passengers`:
+/// only worldgen leaves it, for a structure mob the game finishes when its
+/// chunk loads (`Game::load_mob`), never for a player to ask for. Taken off the
+/// compounds a player's NBT arrives in: `/summon`'s argument, `/data`'s and the
+/// `minecraft:entity_data` component's (`Game::apply_entity_nbt`), and
+/// `native_summon`, which takes `/summon`'s argument.
+pub(in crate::game) fn strip_finalize_tree(tag: &mut Tag) {
+    let Tag::Compound(c) = tag else { return };
+    c.remove(&"horizon:finalize".into());
+    if let Some(Tag::List(passengers)) = c.get_mut(&"Passengers".into()) {
+        for passenger in passengers {
+            strip_finalize_tree(passenger);
+        }
     }
 }
 
@@ -2907,3 +2933,7 @@ mod vehicle_container_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../finalize_marker_tests.rs"]
+mod finalize_marker_tests;
