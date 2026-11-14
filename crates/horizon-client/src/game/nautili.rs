@@ -149,13 +149,13 @@ impl Game<'_> {
             }
         }
         if tame && !food {
-            // doPlayerRide.
+            // doPlayerRide: `player.startRiding(this)`, which keeps the
+            // rider's view (`ServerPlayer.startRiding`'s `Relative.ROTATION`).
             let id = self.mobs[index].id;
             if !self.native_may_board(id) {
                 return true;
             }
             self.break_leash(id, true, false);
-            self.yaw = self.mobs[index].yaw;
             self.mount.reset_jump();
             self.start_riding(id);
             return true;

@@ -450,7 +450,8 @@ impl Game<'_> {
                 .insert((at[0].floor() as i32 >> 4, at[2].floor() as i32 >> 4));
             return true;
         }
-        // doPlayerRide
+        // doPlayerRide: `AbstractHorse.doPlayerRide` turns the rider to the
+        // horse's yaw before it seats them.
         let id = self.mobs[index].id;
         if !self.native_may_board(id) {
             return true;
@@ -707,7 +708,8 @@ impl Game<'_> {
             p.fall_distance = 0.0;
         }
     }
-    /// `removePassenger` + `getDismountLocationForPassenger`: beside the mount.
+    /// `removePassenger` + `getDismountLocationForPassenger`: where the mount
+    /// lets the rider out.
     pub(super) fn dismount_mount(&mut self) {
         let Some(id) = self.riding else {
             return;
@@ -730,7 +732,6 @@ impl Game<'_> {
             position: m.position,
             bounds: m.bounds(),
             width: m.width(),
-            height: m.height(),
             yaw: m.yaw,
         };
         if self.dismount_in_portal(mount.position) {
@@ -743,6 +744,7 @@ impl Game<'_> {
             yaw: self.yaw,
             width: p.dimensions.width,
             poses: rider_poses(p),
+            main_arm_left: self.settings.main_hand_left,
         };
         let (spot, pose) = dismount_location(&mount, &rider, &GameDismountWorld(self));
         if let Some(p) = self.player.as_mut() {
@@ -982,21 +984,22 @@ impl Game<'_> {
 }
 
 /// The mount a rider gets off: its kind, where it stands, its box,
-/// `getBbWidth`, `getBbHeight` and body yaw.
+/// `getBbWidth` and body yaw.
 struct Mount {
     species: Species,
     position: Vec3,
     bounds: Aabb,
     width: f32,
-    height: f32,
     yaw: f32,
 }
-/// The rider getting off: `getYRot`, `getBbWidth`, and
-/// `getLocalBoundsForPose` for each of `Player.getDismountPoses`.
+/// The rider getting off: `getYRot`, `getBbWidth`,
+/// `getLocalBoundsForPose` for each of `Player.getDismountPoses`, and
+/// `getMainArm`.
 struct Rider {
     yaw: f32,
     width: f32,
     poses: Vec<(Pose, Dimensions)>,
+    main_arm_left: bool,
 }
 /// `Player.getDismountPoses`: standing, crouching, then crawling.
 const DISMOUNT_POSES: [Pose; 3] = [Pose::Standing, Pose::Crouching, Pose::Swimming];
@@ -1012,8 +1015,6 @@ fn rider_poses(p: &PlayerMotion) -> Vec<(Pose, Dimensions)> {
 }
 /// The level queries a dismount makes.
 trait DismountWorld {
-    /// A full collision block (the generic rule's test).
-    fn full_collision(&self, p: [i32; 3]) -> bool;
     /// `getFluidState(pos).is(FluidTags.LAVA)`.
     fn lava(&self, p: [i32; 3]) -> bool;
     /// `BlockGetter.getBlockFloorHeight(pos)`.
@@ -1023,13 +1024,6 @@ trait DismountWorld {
 }
 struct GameDismountWorld<'a, 'g>(&'a Game<'g>);
 impl DismountWorld for GameDismountWorld<'_, '_> {
-    fn full_collision(&self, p: [i32; 3]) -> bool {
-        let g = self.0;
-        g.res
-            .facts()
-            .get(g.world.block(p[0], p[1], p[2]))
-            .full_collision
-    }
     fn lava(&self, p: [i32; 3]) -> bool {
         let g = self.0;
         g.res.facts().get(g.world.block(p[0], p[1], p[2])).fluid == Fluid::Lava
@@ -1045,7 +1039,8 @@ impl DismountWorld for GameDismountWorld<'_, '_> {
         self.0.can_dismount_to(bounds)
     }
 }
-/// `getDismountLocationForPassenger`, and the pose the rider takes there.
+/// `getDismountLocationForPassenger`, and the pose the rider takes there: each
+/// vehicle class's own rule, and `Entity`'s on top of the mount for the rest.
 fn dismount_location(
     mount: &Mount,
     rider: &Rider,
@@ -1054,30 +1049,135 @@ fn dismount_location(
     if mount.species == Species::Strider {
         return strider_dismount_location(mount, rider, world);
     }
-    // Beside the mount, else on top of it.
-    let yaw = mount.yaw.to_radians();
-    let side = Vec3::new(f64::from(yaw.cos()), 0.0, f64::from(yaw.sin()));
-    let w = f64::from(mount.width) / 2.0 + 0.4;
-    let base = mount.position;
-    let candidates = [
-        Vec3::new(base.x - side.x * w, base.y, base.z - side.z * w),
-        Vec3::new(base.x + side.x * w, base.y, base.z + side.z * w),
-        Vec3::new(base.x, base.y + f64::from(mount.height), base.z),
+    // `Camel` is an `AbstractHorse`, so the horse rule comes first.
+    if equine::is_equine(mount.species) {
+        return horse_dismount_location(mount, rider, world);
+    }
+    if horizon_client::mobs::drops::is_animal(mount.species) {
+        return animal_dismount_location(mount, rider, world);
+    }
+    // Entity.getDismountLocationForPassenger: on top of the vehicle's box.
+    (
+        Vec3::new(
+            mount.position.x,
+            mount.bounds.max_position().y,
+            mount.position.z,
+        ),
+        None,
+    )
+}
+/// `AbstractHorse.getDismountLocationForPassenger`: out of the horse's box to
+/// the main hand's side first, then the other, then its own position.
+fn horse_dismount_location(
+    mount: &Mount,
+    rider: &Rider,
+    world: &impl DismountWorld,
+) -> (Vec3, Option<Pose>) {
+    // HumanoidArm: the main hand is the right one unless the player set it.
+    let main = if rider.main_arm_left { -90.0 } else { 90.0 };
+    for turn in [main, -main] {
+        let direction = escape_vector(
+            f64::from(mount.width),
+            f64::from(rider.width),
+            mount.yaw + turn,
+        );
+        if let Some(found) = horse_side(mount, rider, world, direction) {
+            return found;
+        }
+    }
+    (mount.position, None)
+}
+/// `AbstractHorse.getDismountLocationInDirection`: from the horse's feet up to
+/// 0.75 above its box, in each of the rider's dismount poses.
+fn horse_side(
+    mount: &Mount,
+    rider: &Rider,
+    world: &impl DismountWorld,
+    direction: Vec3,
+) -> Option<(Vec3, Option<Pose>)> {
+    let (x, z) = (
+        mount.position.x + direction.x,
+        mount.position.z + direction.z,
+    );
+    let bottom = mount.bounds.min_position().y.floor() as i32;
+    let limit = mount.bounds.max_position().y + 0.75;
+    for (pose, dimensions) in &rider.poses {
+        let mut y = bottom;
+        loop {
+            let floor = world.floor_height([x.floor() as i32, y, z.floor() as i32]);
+            if f64::from(y) + floor > limit {
+                break;
+            }
+            // DismountHelper.isBlockFloorValid.
+            if !floor.is_infinite() && floor < 1.0 {
+                let at = Vec3::new(x, f64::from(y) + floor, z);
+                if world.can_dismount_to(dimensions.bounds(at)) {
+                    return Some((at, Some(*pose)));
+                }
+            }
+            y += 1;
+            if f64::from(y) >= limit {
+                break;
+            }
+        }
+    }
+    None
+}
+/// `Animal.getDismountLocationForPassenger`: the eight blocks around the
+/// mount, its own facing's right side first, at the mount's own height.
+fn animal_dismount_location(
+    mount: &Mount,
+    rider: &Rider,
+    world: &impl DismountWorld,
+) -> (Vec3, Option<Pose>) {
+    // Entity.getMotionDirection: Direction.fromYRot, in doubles.
+    let turn = (f64::from(mount.yaw) / 90.0 + 0.5).floor() as i32;
+    let (fx, fz) = [(0, 1), (-1, 0), (0, -1), (1, 0)][(turn & 3) as usize];
+    // Direction.getClockWise.
+    let (rx, rz) = (-fz, fx);
+    // DismountHelper.offsetsForDirection.
+    let offsets = [
+        (rx, rz),
+        (-rx, -rz),
+        (rx - fx, rz - fz),
+        (-rx - fx, -rz - fz),
+        (fx + rx, fz + rz),
+        (fx - rx, fz - rz),
+        (-fx, -fz),
+        (fx, fz),
     ];
-    let spot = candidates
-        .into_iter()
-        .find(|c| {
-            let f = |dy: i32| {
-                world.full_collision([
-                    c.x.floor() as i32,
-                    c.y.floor() as i32 + dy,
-                    c.z.floor() as i32,
-                ])
-            };
-            !f(0) && !f(1)
-        })
-        .unwrap_or(candidates[2]);
-    (spot, None)
+    let (bx, by, bz) = (
+        mount.position.x.floor() as i32,
+        mount.position.y.floor() as i32,
+        mount.position.z.floor() as i32,
+    );
+    for (pose, dimensions) in &rider.poses {
+        for (dx, dz) in offsets {
+            let p = [bx + dx, by, bz + dz];
+            let floor = world.floor_height(p);
+            if floor.is_infinite() || floor >= 1.0 {
+                continue;
+            }
+            // Vec3.upFromBottomCenterOf.
+            let at = Vec3::new(
+                f64::from(p[0]) + 0.5,
+                f64::from(p[1]) + floor,
+                f64::from(p[2]) + 0.5,
+            );
+            if world.can_dismount_to(dimensions.bounds(at)) {
+                return (at, Some(*pose));
+            }
+        }
+    }
+    // `super.getDismountLocationForPassenger`.
+    (
+        Vec3::new(
+            mount.position.x,
+            mount.bounds.max_position().y,
+            mount.position.z,
+        ),
+        None,
+    )
 }
 /// `Entity.getCollisionHorizontalEscapeVector`: out of the vehicle's box
 /// along `yaw`, to the edge of the square it spans.
@@ -1518,9 +1618,6 @@ mod tests {
         }
     }
     impl DismountWorld for Sea {
-        fn full_collision(&self, p: [i32; 3]) -> bool {
-            self.solid(p)
-        }
         fn lava(&self, p: [i32; 3]) -> bool {
             p[1] <= 30 && !self.solid(p)
         }
@@ -1553,7 +1650,6 @@ mod tests {
                 Vec3::new(x + 0.45, SURFACE + 1.7, z + 0.45),
             ),
             width: 0.9,
-            height: 1.7,
             yaw: 0.0,
         }
     }
@@ -1565,6 +1661,7 @@ mod tests {
                 .iter()
                 .map(|&pose| (pose, pose.dimensions(1.0)))
                 .collect(),
+            main_arm_left: false,
         }
     }
     fn block_of(at: Vec3) -> [i32; 3] {
@@ -2019,6 +2116,10 @@ mod camel_jump_tests;
 #[cfg(test)]
 #[path = "strider_lava_boarding_tests.rs"]
 mod strider_lava_boarding_tests;
+
+#[cfg(test)]
+#[path = "ride_dismount_tests.rs"]
+mod ride_dismount_tests;
 
 #[cfg(test)]
 #[path = "ride_seat_tests.rs"]

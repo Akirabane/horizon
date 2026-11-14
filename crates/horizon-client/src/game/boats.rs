@@ -1682,8 +1682,8 @@ impl Game<'_> {
             return true;
         }
         let id = self.boats[i].id;
-        self.yaw = self.boats[i].yaw;
-        // Entity.startRiding (ServerPlayer.startRiding fires the trigger).
+        // Entity.startRiding (ServerPlayer.startRiding fires the trigger): the
+        // teleport is `Relative.ROTATION`, so the rider keeps its view.
         self.start_riding(id);
         true
     }

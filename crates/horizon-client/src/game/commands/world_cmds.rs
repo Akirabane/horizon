@@ -1784,8 +1784,8 @@ impl Game<'_> {
                     if !self.native_may_board(id) {
                         return Err(generic());
                     }
-                    self.yaw = self.boats[i].yaw;
-                    // ServerPlayer.startRiding seats the player immediately.
+                    // ServerPlayer.startRiding seats the player immediately,
+                    // keeping its rotation (`Relative.ROTATION`).
                     let at = self.player_boat_seat(i);
                     if let Some(player) = self.player.as_mut() {
                         player.position = at;
@@ -1854,7 +1854,6 @@ impl Game<'_> {
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob_id) {
             m.extra.flag = false;
             m.extra.counter = 0;
-            self.yaw = m.yaw;
         }
         self.mount.jump_ticks = 0;
         self.mount.jump_scale = 0.0;
