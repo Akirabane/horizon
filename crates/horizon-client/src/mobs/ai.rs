@@ -571,10 +571,6 @@ fn generic(m: &mut Mob) {
         g.add(5, Stroll::avoiding_water(1.0));
         g.add(6, LookAtPlayer::new(6.0));
         g.add(7, RandomLookAround::default());
-        if m.kind.species == Species::Armadillo {
-            // Armadillo's constructor: pickNextScuteDropTime.
-            m.extra.egg_time = next_scute_time(m);
-        }
     }
 }
 /// Subclasses of `net.minecraft.world.entity.monster.Monster`.
@@ -1994,7 +1990,7 @@ pub(super) fn server_ai_step(
     m.jump_control_tick();
 }
 /// `Armadillo.pickNextScuteDropTime`: 5 to 10 minutes.
-pub(crate) fn next_scute_time(m: &mut Mob) -> i32 {
+pub(super) fn next_scute_time(m: &mut Mob) -> i32 {
     m.random.next_int_bound(20 * 60 * 5).unwrap_or(0) + 20 * 60 * 5
 }
 /// `Armadillo.customServerAiStep`: the scute timer keeps counting down and is
