@@ -2066,38 +2066,6 @@ impl Game<'_> {
         self.feedback(message);
         Ok(targets.len() as i32)
     }
-    /// `ServerClockManager.getInstance`: commands address clock-keyed state.
-    /// Keep the existing Overworld clock tied to the world's canonical day time.
-    pub(super) fn command_clock_time(&self, clock: &str) -> i64 {
-        if clock == "minecraft:overworld" {
-            self.world.day_time
-        } else {
-            self.ui.command_clocks.get(clock).map_or(0, |c| c.0)
-        }
-    }
-    pub(super) fn set_command_clock_time(&mut self, clock: &str, total: i64) {
-        if clock == "minecraft:overworld" {
-            self.world.day_time = total;
-        } else {
-            self.ui
-                .command_clocks
-                .entry(clock.to_owned())
-                .or_default()
-                .0 = total;
-        }
-    }
-    pub(super) fn command_clock_state(&mut self, clock: &str) -> &mut super::chat::WorldClock {
-        if clock == "minecraft:overworld" {
-            &mut self.ui.clock
-        } else {
-            &mut self
-                .ui
-                .command_clocks
-                .entry(clock.to_owned())
-                .or_default()
-                .1
-        }
-    }
     /// `TimeCommand.getDefaultClock`: explicit registered clocks and dimension defaults are
     /// separate; built-in timelines and markers belong only to Overworld.
     fn cmd_time(&mut self, id: &str, ctx: &Context) -> R<i32> {
