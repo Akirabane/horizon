@@ -2465,7 +2465,7 @@ impl Game<'_> {
         let Some(entity) = self.world.block_entities.get(&key) else {
             return;
         };
-        if entity.id() != name || fields.is_empty() {
+        if entity.id() != name || fields.is_empty() && !matches!(entity, BlockEntity::Conduit(_)) {
             return;
         }
         let mut full = fields.clone();
@@ -8289,7 +8289,6 @@ impl Game<'_> {
                 // BlockItem.useOn: a consumable that could not be placed is used
                 // (Item.use), which the server does for this same packet. CONSUME
                 // does not swing, and a full player's FAIL still ends the click.
-                // Adventure's can_place_on leaves the placing to the server.
                 if !reacts
                     && placed.is_none()
                     && self.may_build()
@@ -8570,13 +8569,14 @@ impl Game<'_> {
     /// Run BlockItem.place on a disposable level: where it placed and the
     /// blocks it set. The real level supplies collision shapes and
     /// building-blocking entities; random draws, scheduled ticks and events
-    /// stay in the preview.
+    /// stay in the preview. `ItemStack.useOn` runs it in adventure mode only
+    /// when the used stack's `can_place_on` names the clicked block.
     pub(super) fn remote_can_place(
         &mut self,
         hit: &super::Hit,
         stack: &ItemStack,
     ) -> Option<DryPlace> {
-        if !self.may_build() {
+        if !self.may_build() && !self.stack_can_place_on_in_adventure(stack, hit.pos) {
             return None;
         }
         let ctx = horizon_world::level::PlaceContext {
@@ -9992,10 +9992,10 @@ impl Game<'_> {
     ) {
         if let Some(r) = self.remote.as_mut() {
             r.menu = Some((container, "minecraft:merchant".to_owned()));
-            r.menu_title = Some(text);
+            r.menu_title = Some(text.clone());
         }
         let session = horizon_client::merchant::Session::new(Vec::new(), true);
-        self.open_remote_merchant(session, (!title.is_empty()).then_some(title));
+        self.open_remote_merchant(session, (!title.is_empty()).then_some(text));
     }
     /// ClientboundMerchantOffersPacket.
     fn remote_merchant_offers(&mut self, p: play::MerchantOffers) {
