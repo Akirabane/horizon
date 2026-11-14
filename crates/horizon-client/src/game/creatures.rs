@@ -5175,7 +5175,7 @@ impl Game<'_> {
             let amount = self.shot_damage(&mut arrow, None);
             let burning = p.arrow.as_ref().is_some_and(|a| a.on_fire());
             let creative = p.owner == Some(Who::Player) && self.creative;
-            self.arrow_hits_cart(i, amount, p.velocity, burning, creative);
+            self.arrow_hits_cart(i, amount, p.velocity, burning, creative, p.owner, p.guest);
             self.finish_arrow_hit(arrow, EntityHit::Hurt);
             return Ok(());
         }

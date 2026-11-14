@@ -887,6 +887,9 @@ impl Game<'_> {
             items_ignore: items_ignore_explosion(self.ui.rules.bool("mob_griefing"), interaction),
             spared: exploding.filter(|_| self.combat.explosion_source_named),
         };
+        // `VehicleEntity.hurtServer` credits its ENTITY_DAMAGE to
+        // `DamageSource.getEntity`, which for a blast is its indirect source.
+        let blast_by = self.explosion_kill_credit();
         let (items_len, orbs_len) = (self.dropped.len(), self.orbs.len());
         let (mut items_kept, mut orbs_kept) = (0, 0);
         let (mut boats_gone, mut carts_gone) = (0, 0);
@@ -1027,7 +1030,13 @@ impl Game<'_> {
                     // a destroyed one is gone before the push.
                     EntityHandle::Cart(i) => {
                         let len = self.carts.len();
-                        self.hurt_cart(i, amount, false, true);
+                        self.hurt_cart(
+                            i,
+                            amount,
+                            false,
+                            true,
+                            super::minecarts::CartHit::attributed(blast_by),
+                        );
                         carts_gone += len - self.carts.len();
                     }
                     // `VehicleEntity.hurtServer`: damage * 10, broken past 40.

@@ -1,6 +1,7 @@
 //! `/recipe`, `/damage`, `/rotate`, `/swing`, `/playsound`, `/stopsound`,
 //! `/particle`, `/attribute`, `/ride` and `/spreadplayers`.
 use super::{Arg, Context, Game, R, Target, err, wrap_degrees};
+use crate::game::minecarts::CartHit;
 use horizon_client::{
     mobs::{Damage, DamageKind, MobEvent, Who, finalize},
     scoreboard_cmd::{Holder, Tracker},
@@ -294,7 +295,7 @@ impl Game<'_> {
             }
             Target::Item(id) => self.command_damage_item(id, amount, ty, cause.or(by)),
             Target::Boat(_) | Target::Cart(_) => {
-                self.command_damage_vehicle(target, amount, ty, cause.or(by))
+                self.command_damage_vehicle(target, amount, ty, by, cause.or(by))
             }
             Target::Dragon(id) => self.command_damage_dragon(
                 id,
@@ -316,11 +317,13 @@ impl Game<'_> {
     }
 
     /// `VehicleEntity.hurtServer`: report acceptance even when the vehicle survives.
+    /// `by` is the `DamageSource`'s direct entity, `causing` its causing entity.
     fn command_damage_vehicle(
         &mut self,
         target: Target,
         amount: f32,
         damage_type: &str,
+        by: Option<Target>,
         causing: Option<Target>,
     ) -> bool {
         let registry = &self.motion.health.damage;
@@ -353,11 +356,9 @@ impl Game<'_> {
                 .iter()
                 .position(|b| b.id == id)
                 .is_some_and(|i| self.hurt_boat_result(i, amount, creative).is_some()),
-            Target::Cart(_) => self
-                .carts
-                .iter()
-                .position(|c| c.id == id)
-                .is_some_and(|i| self.hurt_cart_result(i, amount, creative, ignites)),
+            Target::Cart(_) => self.carts.iter().position(|c| c.id == id).is_some_and(|i| {
+                self.hurt_cart_result(i, amount, creative, ignites, CartHit::command(by, causing))
+            }),
             _ => false,
         }
     }
