@@ -495,6 +495,7 @@ fn a_wind_charge_kill_of_a_mob_deals_the_wind_charge_damage_type() {
 /// `SweetBerryBushBlock.java:122`) all pop through it, so they drop nothing with
 /// the rule off and their usual item with it on.
 mod block_drops_pops {
+    use super::super::Hit;
     use super::super::native_machines::tests::server_game;
     use super::*;
     use horizon_client::items::ItemStack;
