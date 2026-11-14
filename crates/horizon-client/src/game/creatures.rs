@@ -3629,6 +3629,8 @@ impl Game<'_> {
             return;
         }
         let coin = self.bred_coat_coin(parent, p.species());
+        // The baby's variant; a rabbit draws its own (Rabbit.getBreedOffspring).
+        let offspring_variant = self.bred_offspring_variant(parent, &p, q.as_ref(), coin);
         // Axolotl.getBreedOffspring: useRareVariant (one in 1200) makes it blue,
         // else either parent's variant. The draws come from the mother's random.
         let axolotl = if p.species() == Species::Axolotl {
@@ -3818,16 +3820,8 @@ impl Game<'_> {
                 child.extra.owner = p.extra.owner;
                 child.persistent = true;
             }
-            // Offspring inherit a parent's variant (pigs/cows/chickens) or mixed wool.
-            child.extra.variant = p.extra.variant;
-            // Fox, Pig, Cow and Chicken.getBreedOffspring: either parent's variant.
-            if matches!(
-                p.species(),
-                Species::Fox | Species::Pig | Species::Cow | Species::Chicken
-            ) && !coin
-            {
-                child.extra.variant = q.as_ref().map_or(p.extra.variant, |q| q.extra.variant);
-            }
+            // A parent's variant, or the rabbit's own draw above.
+            child.extra.variant = offspring_variant;
             if let Some(variant) = mooshroom {
                 child.extra.variant = variant;
             }
@@ -8483,6 +8477,10 @@ mod pickable_projectile_tests {
 #[cfg(test)]
 #[path = "breeding_orb_tests.rs"]
 mod breeding_orb_tests;
+
+#[cfg(test)]
+#[path = "rabbit_colour_tests.rs"]
+mod rabbit_colour_tests;
 
 #[cfg(test)]
 mod chorus_projectile_drop_tests {
