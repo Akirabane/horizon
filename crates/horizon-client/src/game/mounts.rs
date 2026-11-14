@@ -244,6 +244,11 @@ impl Game<'_> {
         if !m.extra.saddled || food || self.keys.held(Action::Sneak) {
             return false;
         }
+        // `Strider.canAddPassenger`: a strider whose eyes are in lava has no
+        // seat, though the click still counts as used.
+        if m.species() == Species::Strider && m.fluids.eye_in_lava {
+            return true;
+        }
         let id = m.id;
         if !self.native_may_board(id) {
             return true;
@@ -395,16 +400,41 @@ impl Game<'_> {
             && !m.extra.chested
         {
             m.extra.chested = true;
-            Some("minecraft:entity.donkey.chest")
+            // AbstractChestedHorse.playChestEquipsSound, which Mule overrides
+            // with its own chest sound.
+            Some(match species {
+                Species::Mule => "minecraft:entity.mule.chest",
+                _ => "minecraft:entity.donkey.chest",
+            })
         } else {
             None
         };
         if let Some(sound) = sound {
-            let pitch =
-                (self.world.random.next_float() - self.world.random.next_float()) * 0.2 + 1.0;
             let chest = item == "minecraft:chest";
-            self.audio
-                .play(sound, Some(at), if chest { 0.5 } else { 1.0 }, pitch);
+            let m = &mut self.mobs[index];
+            let silent = m.silent;
+            // `LivingEntity.onEquipItem`: a saddle's or armour's equip sound plays
+            // at the mount's feet at pitch `1.0F`, seeded with the mount's own
+            // random's `nextLong`. `AbstractChestedHorse.playChestEquipsSound`
+            // pitches a chest's sound from two floats of that same random, which
+            // it draws even while silent, at volume 1.0.
+            let pitch = if chest {
+                (m.random.next_float() - m.random.next_float()) * 0.2 + 1.0
+            } else {
+                1.0
+            };
+            let seed = if chest || silent {
+                None
+            } else {
+                Some(m.random.next_long())
+            };
+            let feet = [m.position.x, m.position.y, m.position.z];
+            if !silent {
+                match seed {
+                    Some(seed) => self.audio.play_seeded(sound, Some(feet), 1.0, pitch, seed),
+                    None => self.audio.play(sound, Some(feet), 1.0, pitch),
+                }
+            }
             self.consume_held();
             if !chest {
                 let id = self.mobs[index].id;
@@ -1604,7 +1634,7 @@ mod tests {
 
     /// A server-side game with nothing in it but an empty chunk, or None when
     /// the prepared resources are missing (CI has no vanilla data).
-    fn server_game() -> Option<Game<'static>> {
+    pub(super) fn server_game() -> Option<Game<'static>> {
         use crate::game::{Audio, Options, Progress, Settings, load_resources};
         let root = std::env::var_os("HORIZON_TEST_RESOURCES")
             .map(std::path::PathBuf::from)
@@ -1800,6 +1830,180 @@ mod tests {
         assert_eq!(game.mobs[0].extra.age, -23800, "camel cactus ages 10 s");
     }
 
+    /// Equips `item` on mob 0 and collects the sounds and the `minecraft:equip`
+    /// game events it made.
+    fn equip(game: &mut Game<'_>, item: &str) -> (bool, Shown) {
+        game.inventory[game.selected] = Some(ItemStack::new(item, 2));
+        game.audio.capture = Some(Vec::new());
+        crate::game::sculk::TEST_POSTED_EVENTS
+            .with(|events| *events.borrow_mut() = Some(Vec::new()));
+        let used = game.interact_mount(0, item);
+        let sounds = game
+            .audio
+            .capture
+            .take()
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.event, s.position, s.volume, s.pitch))
+            .collect();
+        let events = crate::game::sculk::TEST_POSTED_EVENTS.with(|events| {
+            events
+                .borrow_mut()
+                .take()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(event, _, _)| *event == "minecraft:equip")
+                .collect()
+        });
+        (used, Shown { sounds, events })
+    }
+
+    /// `LivingEntity.onEquipItem`: a saddle or horse armour plays its equip sound
+    /// at pitch `1.0F`, at the mount's feet, seeded with the mount's own random's
+    /// `nextLong`. A chest's sound is `AbstractChestedHorse.playChestEquipsSound`'s,
+    /// pitched from two floats of that random at volume 1.0. A silent mount plays
+    /// nothing (and a silent saddle or armour draws no seed either), and the
+    /// level's random draws nothing in any of it.
+    #[test]
+    fn saddling_and_armouring_play_at_pitch_one_from_the_mounts_own_random() {
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        let at = [1.5, 64.0, -2.5];
+        mount(&mut game, "minecraft:horse", 1, at, 7);
+        let level_random = game.world.random.clone().next_long();
+        let (used, shown) = equip(&mut game, "minecraft:saddle");
+        assert!(used, "a tamed horse takes the saddle: {shown:?}");
+        assert_eq!(
+            shown.sounds,
+            vec![("minecraft:entity.horse.saddle".to_string(), at, 1.0, 1.0)],
+            "{shown:?}"
+        );
+        assert_eq!(
+            shown.events,
+            vec![("minecraft:equip", at, Some(Who::Mob(1)))]
+        );
+        let mut r = horizon_core::random::LegacyRandom::new(7);
+        r.next_long();
+        assert_eq!(
+            game.mobs[0].random.clone().next_double(),
+            r.next_double(),
+            "one nextLong for the equip sound's seed, and nothing else"
+        );
+        assert_eq!(
+            game.world.random.clone().next_long(),
+            level_random,
+            "the level's own random drew nothing"
+        );
+
+        // Horse armour takes the same path and seeds from the same random.
+        let (used, shown) = equip(&mut game, "minecraft:iron_horse_armor");
+        assert!(used, "a tamed horse takes armour: {shown:?}");
+        assert_eq!(
+            shown.sounds,
+            vec![("minecraft:entity.horse.armor".to_string(), at, 1.0, 1.0)],
+            "{shown:?}"
+        );
+        let mut r = horizon_core::random::LegacyRandom::new(7);
+        r.next_long();
+        r.next_long();
+        assert_eq!(
+            game.mobs[0].random.clone().next_double(),
+            r.next_double(),
+            "a nextLong for each equip sound"
+        );
+
+        // A donkey's chest is pitched from its own random's two floats, at
+        // volume 1.0 and still at its feet.
+        let feet = [0.5, 64.0, 0.5];
+        mount(&mut game, "minecraft:donkey", 2, feet, 11);
+        let level_random = game.world.random.clone().next_long();
+        let (used, shown) = equip(&mut game, "minecraft:chest");
+        assert!(used, "a tamed donkey takes a chest: {shown:?}");
+        let mut r = horizon_core::random::LegacyRandom::new(11);
+        let pitch = (r.next_float() - r.next_float()) * 0.2 + 1.0;
+        assert_eq!(
+            shown.sounds,
+            vec![(
+                "minecraft:entity.donkey.chest".to_string(),
+                feet,
+                1.0,
+                pitch
+            )],
+            "{shown:?}"
+        );
+        assert_eq!(
+            game.world.random.clone().next_long(),
+            level_random,
+            "the level's own random drew nothing"
+        );
+
+        // A silent mount plays no equip sound and draws no seed; the equip
+        // event still goes out.
+        let feet = [0.5, 64.0, 2.5];
+        mount(&mut game, "minecraft:horse", 3, feet, 13);
+        game.mobs[0].silent = true;
+        let (used, shown) = equip(&mut game, "minecraft:saddle");
+        assert!(used, "a silent horse still takes the saddle");
+        assert!(shown.sounds.is_empty(), "{shown:?}");
+        assert_eq!(
+            shown.events,
+            vec![("minecraft:equip", feet, Some(Who::Mob(3)))]
+        );
+        assert_eq!(
+            game.mobs[0].random.clone().next_double(),
+            horizon_core::random::LegacyRandom::new(13).next_double(),
+            "a silent mount's equip draws nothing"
+        );
+    }
+
+    /// `AbstractChestedHorse.equipChest`: a tamed donkey or mule given a chest
+    /// plays its chest sound at volume 1.0 (`AbstractChestedHorse`
+    /// `playChestEquipsSound` uses `DONKEY_CHEST`, `Mule` overrides it with
+    /// `MULE_CHEST`) and posts no mob equip event, which only the saddle and
+    /// the armour do.
+    #[test]
+    fn a_chest_on_a_donkey_or_mule_plays_its_own_sound_at_full_volume() {
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        for (kind, sound) in [
+            ("minecraft:donkey", "minecraft:entity.donkey.chest"),
+            ("minecraft:mule", "minecraft:entity.mule.chest"),
+        ] {
+            mount(&mut game, kind, 5, [2.5, 64.0, 2.5], 7);
+            game.inventory[game.selected] = Some(ItemStack::new("minecraft:chest", 1));
+            game.audio.capture = Some(Vec::new());
+            crate::game::sculk::TEST_POSTED_EVENTS
+                .with(|events| *events.borrow_mut() = Some(Vec::new()));
+            assert!(game.interact_mount(0, "minecraft:chest"), "{kind}");
+            let sounds: Vec<_> = game
+                .audio
+                .capture
+                .take()
+                .unwrap()
+                .into_iter()
+                .map(|s| (s.event, s.position, s.volume, s.pitch))
+                .collect();
+            let equip_events = crate::game::sculk::TEST_POSTED_EVENTS
+                .with(|events| events.borrow_mut().take().unwrap_or_default());
+            crate::game::sculk::TEST_POSTED_EVENTS.with(|events| *events.borrow_mut() = None);
+            assert!(game.mobs[0].extra.chested, "{kind} wears the chest");
+            assert_eq!(sounds.len(), 1, "{kind}: {sounds:?}");
+            assert_eq!(sounds[0].0, sound, "{kind} chest sound");
+            assert_eq!(sounds[0].2, 1.0, "{kind} chest sound volume");
+            assert!(
+                (0.8..=1.2).contains(&sounds[0].3),
+                "{kind} chest pitch {} outside vanilla's 0.8..1.2",
+                sounds[0].3
+            );
+            assert!(
+                equip_events.is_empty(),
+                "{kind} posted a mob equip event: {equip_events:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_escape_vector_reaches_the_edge_of_the_square() {
         let edge = (0.9 + 0.6 + f64::from(1.0e-5_f32)) / 2.0;
@@ -1809,8 +2013,36 @@ mod tests {
         let v = escape_vector(0.9, 0.6, 45.0);
         assert!((v.x + edge).abs() < 1.0e-3 && (v.z - edge).abs() < 1.0e-3);
     }
+
+    /// `CamelHusk.interact` sets `PersistenceRequired` before it hands the click
+    /// on, so a husk a player saddled is kept past the monster category's 128
+    /// blocks (`Mob.checkDespawn` reads `isPersistenceRequired`).
+    #[test]
+    fn a_camel_husk_keeps_itself_once_clicked() {
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        mount(&mut game, "minecraft:camel_husk", 7, [1.5, 64.0, -2.5], 7);
+        assert!(!game.mobs[0].persistent);
+        assert!(
+            !horizon_client::mobs::ai::requires_custom_persistence(&game.mobs[0]),
+            "nothing else keeps it: the click must"
+        );
+        game.inventory[0] = Some(ItemStack::new("minecraft:saddle", 1));
+        let target = Some(crate::game::InteractTarget {
+            id: 7,
+            location: [0.0; 3],
+        });
+        assert!(game.interact_mob(target).unwrap(), "the saddle is used");
+        assert!(game.mobs[0].extra.saddled, "the saddle went on");
+        assert!(game.mobs[0].persistent, "a clicked camel husk stays");
+    }
 }
 
 #[cfg(test)]
 #[path = "camel_jump_tests.rs"]
 mod camel_jump_tests;
+
+#[cfg(test)]
+#[path = "strider_lava_boarding_tests.rs"]
+mod strider_lava_boarding_tests;
