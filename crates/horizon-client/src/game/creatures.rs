@@ -7478,50 +7478,6 @@ pub(super) fn from_loot(stack: &horizon_world::loot::LootStack) -> ItemStack {
     }
     item
 }
-impl Game<'_> {
-    /// The rest of `NetherPortalBlock.randomTick` after a won roll: with a
-    /// player close enough for spawning, a zombified piglin spawns on the block
-    /// under the portal column when it is a valid spawn.
-    pub(super) fn portal_spawn(&mut self, pos: [i32; 3]) {
-        // ChunkMap.anyPlayerCloseEnoughForSpawning: a non-spectator within 128
-        // blocks of the chunk centre.
-        let centre = [
-            f64::from((pos[0] >> 4) * 16 + 8),
-            f64::from((pos[2] >> 4) * 16 + 8),
-        ];
-        let close = self.level_players().iter().any(|p| {
-            let (dx, dz) = (p.position.x - centre[0], p.position.z - centre[1]);
-            !p.spectator && dx * dx + dz * dz < 16384.0
-        });
-        if !close {
-            return;
-        }
-        let mut y = pos[1];
-        while &*self
-            .res
-            .facts()
-            .get(self.world.block(pos[0], y, pos[2]))
-            .name
-            == "minecraft:nether_portal"
-        {
-            y -= 1;
-        }
-        // isValidSpawn: a sturdy top face (portal frames emit no light).
-        let below = self.res.facts().get(self.world.block(pos[0], y, pos[2]));
-        if below.sturdy_full & (1 << 1) == 0 {
-            return;
-        }
-        let at = [
-            f64::from(pos[0]) + 0.5,
-            f64::from(y + 1),
-            f64::from(pos[2]) + 0.5,
-        ];
-        // setPortalCooldown: the new piglin does not travel at once.
-        if let Some(id) = self.spawn_mob("minecraft:zombified_piglin", at, false) {
-            self.set_portal_cooldown(id);
-        }
-    }
-}
 /// `LivingEntity.knockback` on `p`: [`Game::knock_back_player`]; 1.8.9's
 /// `EntityLivingBase.knockBack` under `legacy` rules.
 fn knock_back(
