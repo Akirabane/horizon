@@ -1358,6 +1358,28 @@ impl Game<'_> {
                 return Ok(0);
             };
             vec![horizon_client::command::snbt::parse_fully(text)?]
+        } else if ctx.get("provider").is_some() {
+            // `LootContextSources`' compute source: the provider's value in the
+            // command's loot context, as a one-tag source.
+            let compute = self.compute_context(ctx)?;
+            let integer = ctx.literals.iter().any(|l| l == "integer");
+            let registry = if integer {
+                "minecraft:context_int_provider"
+            } else {
+                "minecraft:context_float_provider"
+            };
+            let (_, provider) = self.provider_arg(ctx, registry)?;
+            if integer {
+                // ContextIntProvider.getInt: an ArithmeticException reads as 0.
+                let value = self.provider_int(&provider, &compute, 0).unwrap_or(0);
+                vec![Tag::Int(value)]
+            } else {
+                // ContextFloatProvider.getFloat: a failure or a non-finite
+                // value reads as 0.
+                let value = self.provider_float(&provider, &compute, 0).unwrap_or(0.0);
+                let value = if value.is_finite() { value } else { 0.0 };
+                vec![Tag::Float(value.to_bits())]
+            }
         } else {
             let source = self.data_ref(ctx, 1)?;
             let data = self.data_of(&source)?;
@@ -2122,6 +2144,9 @@ mod loot_table_tests {
         assert!(saved.get("Items").is_none());
     }
 }
+
+#[cfg(test)]
+mod compute_tests;
 
 #[cfg(test)]
 mod saved_tag_tests;
