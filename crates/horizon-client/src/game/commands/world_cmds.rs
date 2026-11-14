@@ -130,7 +130,8 @@ impl Game<'_> {
             "player_attack" => DamageKind::PlayerAttack,
             "mace_smash" => DamageKind::MaceSmash,
             "spear" => DamageKind::Spear,
-            "mob_attack" | "mob_attack_no_aggro" => DamageKind::MobAttack,
+            "mob_attack" => DamageKind::MobAttack,
+            "mob_attack_no_aggro" => DamageKind::MobAttackNoAggro,
             "arrow" => DamageKind::Arrow,
             "thrown" | "trident" | "mob_projectile" => DamageKind::Thrown,
             "fireball" | "unattributed_fireball" => DamageKind::Fireball,
@@ -1037,6 +1038,18 @@ impl Game<'_> {
                 let Some(key) = player.attributes.key(attribute) else {
                     return Err(no_attribute(&name, &description));
                 };
+                // Every arm below starts from an instance or a supplier value,
+                // and vanilla's `getAttributeInstance` (modifier add/remove,
+                // base set), `getEntityWithAttribute` (the gets) and
+                // `resetBaseValue` all throw `no_attribute` when the supplier
+                // creates none: a player has no `minecraft:follow_range`.
+                if !player
+                    .attributes
+                    .has_attribute(Some(key.clone()))
+                    .unwrap_or(false)
+                {
+                    return Err(no_attribute(&name, &description));
+                }
                 let unavailable = |_| no_attribute(&name, &description);
                 match id {
                     "attribute.get" | "attribute.base.get" => {
@@ -1189,22 +1202,24 @@ impl Game<'_> {
                         )))
                     }
                     _ => {
-                        let Some(handle) = player.attributes.get_instance(Some(key)).ok().flatten()
-                        else {
-                            return Err(no_attribute(&name, &description));
-                        };
-                        let found = player
+                        // getAttributeModifier: getEntityWithAttribute checks
+                        // hasAttribute, then hasModifier and getModifierValue read
+                        // the cached instance or the type's supplier. None of
+                        // them calls getInstance, so a failed lookup leaves the
+                        // attribute map (and the `attributes` list a save packs)
+                        // untouched.
+                        if !player
                             .attributes
-                            .edit(&handle, |value, _| {
-                                Ok(value
-                                    .modifiers()
-                                    .iter()
-                                    .find(|m| m.id() == modifier_id)
-                                    .map(|m| m.amount()))
-                            })
+                            .has_attribute(Some(key.clone()))
+                            .map_err(unavailable)?
+                        {
+                            return Err(no_attribute(&name, &description));
+                        }
+                        let Some(v) = player
+                            .attributes
+                            .modifier_value(Some(key), &modifier_id)
                             .ok()
-                            .flatten();
-                        let Some(v) = found else {
+                        else {
                             return Err(text_error(
                                 "commands.attribute.failed.no_modifier",
                                 &[
@@ -2214,6 +2229,10 @@ pub(super) fn look_at(from: [f64; 3], to: [f64; 3]) -> [f32; 2] {
 }
 
 #[cfg(test)]
+#[path = "attribute_missing_tests.rs"]
+mod attribute_missing_tests;
+
+#[cfg(test)]
 mod allay_owner_damage_tests {
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
     use horizon_client::mobs::{Damage, Mob};
@@ -2822,6 +2841,10 @@ mod vehicle_damage_command_tests {
 #[cfg(test)]
 #[path = "../particle_command_tests.rs"]
 mod particle_command_tests;
+
+#[cfg(test)]
+#[path = "attribute_tests.rs"]
+mod attribute_tests;
 
 #[cfg(test)]
 mod attribute_modifier_command_tests {

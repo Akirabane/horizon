@@ -7367,22 +7367,6 @@ fn bucketable(species: Species) -> Option<(&'static str, &'static str)> {
 pub(super) fn source_damage_type(d: Damage) -> &'static str {
     damage_type(d.kind, d.attacker.is_some())
 }
-/// Whether the causing entity deals `kind` itself, so it is the source's
-/// direct entity too: a melee hit (`DamageSources.mobAttack`, `playerAttack`,
-/// a mace's or a spear's), a sting, a sonic boom, thorns.
-pub(super) fn melee(kind: horizon_client::mobs::DamageKind) -> bool {
-    use horizon_client::mobs::DamageKind as K;
-    matches!(
-        kind,
-        K::PlayerAttack
-            | K::MaceSmash
-            | K::Spear
-            | K::MobAttack
-            | K::Sting
-            | K::SonicBoom
-            | K::Thorns
-    )
-}
 /// The damage type id of a Horizon damage kind. `caused`: the source has a
 /// causing entity (only a blast asks).
 pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) -> &'static str {
@@ -7393,6 +7377,7 @@ pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) 
         K::MaceSmash => "minecraft:mace_smash",
         K::Spear => "minecraft:spear",
         K::MobAttack => "minecraft:mob_attack",
+        K::MobAttackNoAggro => "minecraft:mob_attack_no_aggro",
         K::Arrow => "minecraft:arrow",
         K::Thrown => "minecraft:thrown",
         K::Fireball => "minecraft:fireball",
@@ -7492,50 +7477,6 @@ pub(super) fn from_loot(stack: &horizon_world::loot::LootStack) -> ItemStack {
         item.data_mut().set_loot_component(id, value);
     }
     item
-}
-impl Game<'_> {
-    /// The rest of `NetherPortalBlock.randomTick` after a won roll: with a
-    /// player close enough for spawning, a zombified piglin spawns on the block
-    /// under the portal column when it is a valid spawn.
-    pub(super) fn portal_spawn(&mut self, pos: [i32; 3]) {
-        // ChunkMap.anyPlayerCloseEnoughForSpawning: a non-spectator within 128
-        // blocks of the chunk centre.
-        let centre = [
-            f64::from((pos[0] >> 4) * 16 + 8),
-            f64::from((pos[2] >> 4) * 16 + 8),
-        ];
-        let close = self.level_players().iter().any(|p| {
-            let (dx, dz) = (p.position.x - centre[0], p.position.z - centre[1]);
-            !p.spectator && dx * dx + dz * dz < 16384.0
-        });
-        if !close {
-            return;
-        }
-        let mut y = pos[1];
-        while &*self
-            .res
-            .facts()
-            .get(self.world.block(pos[0], y, pos[2]))
-            .name
-            == "minecraft:nether_portal"
-        {
-            y -= 1;
-        }
-        // isValidSpawn: a sturdy top face (portal frames emit no light).
-        let below = self.res.facts().get(self.world.block(pos[0], y, pos[2]));
-        if below.sturdy_full & (1 << 1) == 0 {
-            return;
-        }
-        let at = [
-            f64::from(pos[0]) + 0.5,
-            f64::from(y + 1),
-            f64::from(pos[2]) + 0.5,
-        ];
-        // setPortalCooldown: the new piglin does not travel at once.
-        if let Some(id) = self.spawn_mob("minecraft:zombified_piglin", at, false) {
-            self.set_portal_cooldown(id);
-        }
-    }
 }
 /// `LivingEntity.knockback` on `p`: [`Game::knock_back_player`]; 1.8.9's
 /// `EntityLivingBase.knockBack` under `legacy` rules.

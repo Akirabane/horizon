@@ -3770,7 +3770,7 @@ impl Game<'_> {
         self.guest_suggestions(host, conn, &payload);
     }
 
-    fn guest_suggestions(&mut self, host: &mut LanHost, conn: u32, payload: &[u8]) {
+    pub(super) fn guest_suggestions(&mut self, host: &mut LanHost, conn: u32, payload: &[u8]) {
         let mut r = horizon_protocol::buf::Reader::new(payload);
         let (Ok(id), Ok(text)) = (r.varint(), r.string(32500)) else {
             return;
@@ -3786,9 +3786,8 @@ impl Game<'_> {
         let skip = usize::from(text.starts_with('/'));
         let command = &text[skip..];
         let d = vanilla::game_dispatcher_with_features(&self.level.enabled_features);
-        // The completions come from the server's players and lists, not from the host's own registries: a
-        // dedicated server has no local player (they would list "Player"), and a LAN world's guests are not in
-        // the host's list.
+        // Server players and lists, not the host's registries: a dedicated server has no local player.
+        let triggers = super::scoreboard::trigger_objectives_for(&self.score.board, &player_name);
         let mut players = if self.options.dedicated.is_some() {
             Vec::new()
         } else {
@@ -3826,6 +3825,7 @@ impl Game<'_> {
         let own_banned = std::mem::replace(&mut reg.banned_players, banned_players);
         let own_banned_ips = std::mem::replace(&mut reg.banned_ips, banned_ips);
         let own_whitelisted = std::mem::replace(&mut reg.whitelisted, whitelisted);
+        let own_triggers = std::mem::replace(&mut reg.trigger_objectives, triggers);
         let parse = d.parse(command, &self.ui.registries);
         let ((mut start, mut end), mut suggestions) =
             d.suggestions(&parse, command.len(), &self.ui.registries);
@@ -3874,6 +3874,7 @@ impl Game<'_> {
         reg.banned_players = own_banned;
         reg.banned_ips = own_banned_ips;
         reg.whitelisted = own_whitelisted;
+        reg.trigger_objectives = own_triggers;
         // ServerCommandSuggestionsProvider.limitSuggestionCount.
         suggestions.truncate(1000);
         let utf16 = |byte: usize| command[..byte.min(command.len())].encode_utf16().count() as i32;
@@ -3897,7 +3898,6 @@ impl Game<'_> {
             ),
         );
     }
-
     pub(super) fn guest_respawn(&mut self, host: &mut LanHost, conn: u32) {
         let Some(i) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return;
