@@ -1805,8 +1805,7 @@ impl Game<'_> {
                     c.at = pos;
                 }
             }
-            // Wall-mounted entities do not move.
-            Target::Frame(_) | Target::Painting(_) => {}
+            Target::Frame(_) | Target::Painting(_) => self.teleport_hanging(t, v),
             // The commands leave a natural knot out (`without_knots`).
             Target::Knot(_) => {}
         }
@@ -1840,7 +1839,7 @@ impl Game<'_> {
         rotation: Option<[f32; 2]>,
         turn_riders: bool,
     ) -> R<bool> {
-        match self.teleport_vehicle_across(t, level, pos, rotation, turn_riders) {
+        match self.teleport_any_across(t, level, pos, rotation, turn_riders) {
             Ok(true) => return Ok(true),
             Ok(false) => {}
             Err(error) => {
