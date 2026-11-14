@@ -2979,6 +2979,27 @@ def compute():
         cmd('/compute block 8 400 8 integer 1'),
         cmd('/compute block 100000 64 100000 integer 1'),
         cmd('/execute store result score @s cmp run compute default integer 5'),
+        # DataCommands.decorateModification's compute source: the same providers,
+        # stored into the target instead of printed.
+        cmd('/data merge storage harness:compute {x:1}'),
+        cmd('/data modify storage harness:compute x set compute default integer {type:"minecraft:constant",value:5}'),
+        cmd('/data get storage harness:compute x'),
+        cmd('/data modify storage harness:compute x set compute default float {type:"minecraft:constant",value:2.5}'),
+        cmd('/data get storage harness:compute x'),
+        cmd('/data modify storage harness:compute x set compute default integer {type:"minecraft:pow",base:0,exponent:0}'),
+        cmd('/data get storage harness:compute x'),
+        cmd('/data modify storage harness:compute x set compute default integer {value:5}'),
+        cmd('/data modify storage harness:compute x set compute default integer minecraft:nonexistent'),
+        cmd('/data get storage harness:compute x'),
+        cmd('/data modify storage harness:compute list set value []'),
+        cmd('/data modify storage harness:compute list append compute default float {type:"minecraft:mul",inputs:[1.5,4]}'),
+        cmd('/data get storage harness:compute list'),
+        *setup('/setblock 8 229 8 minecraft:smoker'),
+        cmd('/data modify storage harness:compute block_value set compute block 8 229 8 integer minecraft:cooking/time_coal'),
+        cmd('/data get storage harness:compute block_value'),
+        *setup('/setblock 8 229 8 minecraft:air'),
+        cmd('/data modify storage harness:compute entity_value set compute entity @s integer {type:"minecraft:constant",value:1}'),
+        cmd('/data get storage harness:compute entity_value'),
     ]
 
 
