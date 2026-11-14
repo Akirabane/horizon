@@ -400,7 +400,12 @@ impl Game<'_> {
             && !m.extra.chested
         {
             m.extra.chested = true;
-            Some("minecraft:entity.donkey.chest")
+            // AbstractChestedHorse.playChestEquipsSound, which Mule overrides
+            // with its own chest sound.
+            Some(match species {
+                Species::Mule => "minecraft:entity.mule.chest",
+                _ => "minecraft:entity.donkey.chest",
+            })
         } else {
             None
         };
@@ -408,8 +413,7 @@ impl Game<'_> {
             let pitch =
                 (self.world.random.next_float() - self.world.random.next_float()) * 0.2 + 1.0;
             let chest = item == "minecraft:chest";
-            self.audio
-                .play(sound, Some(at), if chest { 0.5 } else { 1.0 }, pitch);
+            self.audio.play(sound, Some(at), 1.0, pitch);
             self.consume_held();
             if !chest {
                 let id = self.mobs[index].id;
@@ -1805,6 +1809,53 @@ mod tests {
         assert_eq!(game.mobs[0].extra.age, -23800, "camel cactus ages 10 s");
     }
 
+    /// `AbstractChestedHorse.equipChest`: a tamed donkey or mule given a chest
+    /// plays its chest sound at volume 1.0 (`AbstractChestedHorse`
+    /// `playChestEquipsSound` uses `DONKEY_CHEST`, `Mule` overrides it with
+    /// `MULE_CHEST`) and posts no mob equip event, which only the saddle and
+    /// the armour do.
+    #[test]
+    fn a_chest_on_a_donkey_or_mule_plays_its_own_sound_at_full_volume() {
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        for (kind, sound) in [
+            ("minecraft:donkey", "minecraft:entity.donkey.chest"),
+            ("minecraft:mule", "minecraft:entity.mule.chest"),
+        ] {
+            mount(&mut game, kind, 5, [2.5, 64.0, 2.5], 7);
+            game.inventory[game.selected] = Some(ItemStack::new("minecraft:chest", 1));
+            game.audio.capture = Some(Vec::new());
+            crate::game::sculk::TEST_POSTED_EVENTS
+                .with(|events| *events.borrow_mut() = Some(Vec::new()));
+            assert!(game.interact_mount(0, "minecraft:chest"), "{kind}");
+            let sounds: Vec<_> = game
+                .audio
+                .capture
+                .take()
+                .unwrap()
+                .into_iter()
+                .map(|s| (s.event, s.position, s.volume, s.pitch))
+                .collect();
+            let equip_events = crate::game::sculk::TEST_POSTED_EVENTS
+                .with(|events| events.borrow_mut().take().unwrap_or_default());
+            crate::game::sculk::TEST_POSTED_EVENTS.with(|events| *events.borrow_mut() = None);
+            assert!(game.mobs[0].extra.chested, "{kind} wears the chest");
+            assert_eq!(sounds.len(), 1, "{kind}: {sounds:?}");
+            assert_eq!(sounds[0].0, sound, "{kind} chest sound");
+            assert_eq!(sounds[0].2, 1.0, "{kind} chest sound volume");
+            assert!(
+                (0.8..=1.2).contains(&sounds[0].3),
+                "{kind} chest pitch {} outside vanilla's 0.8..1.2",
+                sounds[0].3
+            );
+            assert!(
+                equip_events.is_empty(),
+                "{kind} posted a mob equip event: {equip_events:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_escape_vector_reaches_the_edge_of_the_square() {
         let edge = (0.9 + 0.6 + f64::from(1.0e-5_f32)) / 2.0;
@@ -1813,6 +1864,30 @@ mod tests {
         // Facing west of south: the corner of the square.
         let v = escape_vector(0.9, 0.6, 45.0);
         assert!((v.x + edge).abs() < 1.0e-3 && (v.z - edge).abs() < 1.0e-3);
+    }
+
+    /// `CamelHusk.interact` sets `PersistenceRequired` before it hands the click
+    /// on, so a husk a player saddled is kept past the monster category's 128
+    /// blocks (`Mob.checkDespawn` reads `isPersistenceRequired`).
+    #[test]
+    fn a_camel_husk_keeps_itself_once_clicked() {
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        mount(&mut game, "minecraft:camel_husk", 7, [1.5, 64.0, -2.5], 7);
+        assert!(!game.mobs[0].persistent);
+        assert!(
+            !horizon_client::mobs::ai::requires_custom_persistence(&game.mobs[0]),
+            "nothing else keeps it: the click must"
+        );
+        game.inventory[0] = Some(ItemStack::new("minecraft:saddle", 1));
+        let target = Some(crate::game::InteractTarget {
+            id: 7,
+            location: [0.0; 3],
+        });
+        assert!(game.interact_mob(target).unwrap(), "the saddle is used");
+        assert!(game.mobs[0].extra.saddled, "the saddle went on");
+        assert!(game.mobs[0].persistent, "a clicked camel husk stays");
     }
 }
 
