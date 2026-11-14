@@ -5,7 +5,7 @@ pub(super) mod compute;
 mod data;
 mod display_names;
 mod target_position;
-pub(super) use data::place_summoned;
+pub(super) use data::{place_summoned, strip_finalize_tree};
 mod effects;
 pub(super) mod execute;
 pub(super) mod extra;
