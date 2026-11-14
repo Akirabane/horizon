@@ -1931,12 +1931,12 @@ pub enum MobEvent {
         setup: SpawnSetup,
     },
     /// `Mob.convertTo` with `ConversionType.SINGLE` ([`conversion::single`]):
-    /// a new mob of `kind` takes the place of `from` (already removed) and
-    /// keeps its gear, name and flags.
+    /// `from` (already removed) becomes `kind` with its gear, name and flags, then `after`.
     Convert {
         from: Box<Mob>,
         kind: &'static str,
         params: conversion::Params,
+        after: conversion::After,
     },
     DropItem {
         mob: u32,
