@@ -58,6 +58,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          filter: blob:none
       # The merge queue merges with merge commits and main moves to the exact commit its merge_group run verified, so
       # that commit's push run would repeat a finished, green verify (~25 runner-minutes, in a queue that builds six
       # groups at once). Only a green merge_group run of this very commit counts; an admin merge never had one, and an
@@ -136,6 +137,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          filter: blob:none
       # The merge queue merges with merge commits and main moves to the exact commit its merge_group run verified, so
       # that commit's push run would repeat a finished, green verify (~25 runner-minutes, in a queue that builds six
       # groups at once). Only a green merge_group run of this very commit counts; an admin merge never had one, and an
@@ -240,6 +242,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          filter: blob:none
       # The merge queue merges with merge commits and main moves to the exact commit its merge_group run verified, so
       # that commit's push run would repeat a finished, green verify (~25 runner-minutes, in a queue that builds six
       # groups at once). Only a green merge_group run of this very commit counts; an admin merge never had one, and an
@@ -404,6 +407,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          filter: blob:none
       # The merge queue merges with merge commits and main moves to the exact commit its merge_group run verified, so
       # that commit's push run would repeat a finished, green verify (~25 runner-minutes, in a queue that builds six
       # groups at once). Only a green merge_group run of this very commit counts; an admin merge never had one, and an
