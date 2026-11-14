@@ -1694,16 +1694,16 @@ pub enum MobEvent {
         state: horizon_world::registry::BlockStateId,
     },
     AttackPlayer(f32, [f64; 3]),
-    /// `Bee.doHurtTarget` on a player: a sting that lands leaves its stinger
-    /// in them and poisons them for `poison_ticks` (none on easy).
-    StingPlayer {
+    /// `Bee.doHurtTarget`: a sting that lands leaves its stinger and poisons.
+    Sting {
+        target: Who,
         amount: f32,
-        from: [f64; 3],
         poison_ticks: i32,
+        source: Damage,
     },
     /// A melee hit whose effect comes only if the hit lands (husk hunger,
-    /// cave spider poison, wither skeleton wither, bee and pufferfish
-    /// poison): a shield-blocked hit gives nothing.
+    /// cave spider poison, wither skeleton wither): a shield-blocked hit gives
+    /// nothing.
     AttackPlayerWithEffect {
         amount: f32,
         from: [f64; 3],
