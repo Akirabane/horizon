@@ -1,7 +1,7 @@
 //! Game modes beyond survival and creative (`GameType`): adventure players
 //! cannot build, spectators fly through blocks and only watch.
 use super::{Game, Screen};
-use horizon_client::{collisions::SceneCollisions, command::args::GameMode};
+use horizon_client::{collisions::SceneCollisions, command::args::GameMode, items::ItemStack};
 use horizon_world::world_movement::in_range_of_ground;
 
 pub(super) fn mode_id_of(mode: GameMode) -> i32 {
@@ -186,14 +186,17 @@ impl Game<'_> {
     /// `saveWithFullMetadata` (no block entity fails). `components` is not
     /// looked at on this path.
     fn adventure_predicate(&self, component: &str, pos: [i32; 3]) -> bool {
-        let Some(tag) = self
-            .held()
-            .and_then(|s| s.data())
+        self.held()
+            .is_some_and(|stack| self.stack_predicate(stack, component, pos))
+    }
+    /// The same predicate read off a named stack: `ItemStack.useOn` tests the
+    /// stack it is called on, which for an off-hand use is not what `held()`
+    /// reads outside that use.
+    fn stack_predicate(&self, stack: &ItemStack, component: &str, pos: [i32; 3]) -> bool {
+        stack
+            .data()
             .and_then(|d| d.other(component))
-        else {
-            return false;
-        };
-        self.adventure_predicate_at(tag, pos)
+            .is_some_and(|tag| self.adventure_predicate_at(tag, pos))
     }
     /// The existing supported block/state portion of `AdventureModePredicate.test`.
     /// The held-item wrapper and the projectile caller supply their own live value.
@@ -295,12 +298,25 @@ impl Game<'_> {
         if self.spectator() {
             return true;
         }
-        !self.may_build() && !self.adventure_predicate("minecraft:can_break", pos)
+        !self.may_build() && !self.can_break_in_adventure(pos)
+    }
+    /// `ItemStack.canBreakBlockInAdventureMode`: an adventure player may break,
+    /// or prime TNT at, only a block their held stack's `can_break` matches.
+    pub(super) fn can_break_in_adventure(&self, pos: [i32; 3]) -> bool {
+        self.adventure_predicate("minecraft:can_break", pos)
     }
     /// `ItemStack.useOn` in adventure mode: the used item's `can_place_on`
     /// matches the clicked block (`Player.mayUseItemAt`).
     pub(super) fn can_place_on_in_adventure(&self, clicked: [i32; 3]) -> bool {
         self.adventure_predicate("minecraft:can_place_on", clicked)
+    }
+    /// `ItemStack.canPlaceOnBlockInAdventureMode` of the stack a use names.
+    pub(super) fn stack_can_place_on_in_adventure(
+        &self,
+        stack: &ItemStack,
+        clicked: [i32; 3],
+    ) -> bool {
+        self.stack_predicate(stack, "minecraft:can_place_on", clicked)
     }
     /// `ItemStack.useOn`'s gate before any item's own `useOn`: a player who
     /// may build, or an adventure player whose held item's `can_place_on`
@@ -322,6 +338,10 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "adventure_gate_tests.rs"]
+mod adventure_gate_tests;
 
 #[cfg(test)]
 mod tests {
