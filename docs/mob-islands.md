@@ -2,7 +2,10 @@
 
 Design: [#14457](https://github.com/horizon-rust/horizon/issues/14457).
 Implementation: `crates/horizon-client/src/game/creatures/mob_islands.rs`.
-Parallel ticking is off by default. Design approval and normal implementation review are separate gates.
+The parallel mob loop (`mob_group.rs`, `mob_islands.rs`, `prep.rs`) is currently compiled only with the nondefault
+`upstream-parallel-mobs` feature (`game/mobs/creatures/mod.rs`), so `parallel_tick` does not run mob islands in the
+default build; the other parallel phases follow the setting.
+Design approval and normal implementation review are separate gates.
 
 ## Reach is a correctness contract
 
@@ -144,6 +147,36 @@ with like. With the parallel tick off nothing changes, and the villager parity h
 pin vanilla's exact draws) run with it off. A test turns the switch on with
 `parallel::OWN_RANDOM_TEST`.
 
+## Every turn draws its own random
+
+The villagers were not the only mobs that draw every tick. A fish that leads a school rolls one
+in 200 on the level random on every tick (`aquatic::school_tick`), a parrot one in 400, and the
+brains of the other mobs draw their durations. Each of those draws is a barrier across the lanes:
+the mob waits until every lane has passed its place in the list. The official server's capture of
+2026-11-13 (50 players, 4 cores, about 2,500 mobs ticking) shows what that cost: 131 salmon took
+76 µs a turn and two parrots 540 µs, against 5 µs for a zombie, nearly all of it waiting, the
+process used 1.4 cores, and the loop took as long as the serial one.
+
+With `HORIZON_PARALLEL_TICK` on, a turn's level-random draws therefore come from a `LegacyRandom`
+seeded from the mob's id and the game time (`parallel::mobs_own_random`, `mob_turn_random`,
+`Group::tick`), as the villagers' brains already did, and the mob loop no longer advances the
+level random. The same reasoning holds: vanilla's odds, not its values, which no player can rely
+on since the level's stream is shared with every chunk's spawns and blocks; the mob's own entity
+random keeps vanilla's sequence; the serial loop draws the same way, so the grouped result equals
+the serial one; with the parallel tick off nothing changes. The ordered stream stays for the
+turns' new RNGs (`in_seed_order`) and the lookups by id.
+
+## Why a tick ran serially
+
+A capture (`horizon-ctl profile`, `/profiler`) counts every tick of the loop under `mob_islands.ticks`, labelled
+`verdict`: `grouped`, or the rule that kept the tick serial: `one_lane`, `mods_hook_turns`, `few_mobs`
+(under 256 mobs in the loop), `repeating_seeds`, `mod_effect`, `few_ticking`, `over_budget`, `one_island` (one island holds more than
+three quarters of the ticking mobs) and `one_group`, or one of four that say a reach has no finite bound, which keeps every mob of the level
+serial: `unbounded_state` (a mob's position or velocity is not finite), `unbounded_locomotion`,
+`unbounded_meal` and `unbounded_lists`. The server log names the first such mob, once a minute. The gauges `mob_islands.ticking`, `.islands` and
+`.largest_island` hold what the last plan that got that far found. Read them with
+`horizon-perf query series` on the capture.
+
 ## Native mods and the profiler
 
 What a mod can run in a mob's turn: `native_living_change_target`, `native_living_heal`,
@@ -152,7 +185,7 @@ What a mod can run in a mob's turn: `native_living_change_target`, `native_livin
 `native_living_knockback`, `native_trample` (a mob falling on farmland), `native_block_step_on`,
 `native_block_entity_inside` and `native_block_fall_on` (a content mod's blocks), a content mod
 effect's ticks, `native_living_jump` and `native_living_damage_post`, and mixins into them. The
-build finds which (`horizon_mod_api_gen::mob_turn`, `HORIZON_MOB_TURN`): the loop stays serial
+parallel build finds which using its static trait-package scanner: its loop stays serial
 when a mixin injects into one of those or into anything but a `native_*` hook point, or a trait
 package defines a function named for a hook the turn waits on (all but the last two). A game built
 without that finding, with trait mods, stays serial too. While no mod hooks, grouped turns skip the hooks that
@@ -160,9 +193,17 @@ hand something back (no mod listens) and keep the two notifications, which the s
 at the join, ordered by turn. A mob carrying a content mod's effect keeps the tick serial while mods
 are loaded. The entity tick Pre's cancellations are heard before the loop and passed to every group.
 
-The tick profiler samples on whichever thread runs a mob: each helper samples for whoever samples
-on the server thread, into its own sums, which join the server thread's when it ends. A sampled
-mob's time on a helper includes its waits for earlier mobs' level random.
+The tick profiler samples on whichever thread runs a mob: each helper samples for whoever
+samples on the server thread, into its own sums, which join the server thread's when it ends.
+A sampled mob's time on a helper includes its waits for earlier mobs' level random.
+
+The default build does not include that static scanner, grouped-turn deferral API or helper-thread sampler:
+none has a consumer in its retained implementation. The default borrowed loop dispatches typed
+callbacks directly, without deferral TLS checks. Report sampling keeps its single accumulator,
+CPU attribution, span-owner arbitration and calibration state restoration. This does not establish
+parallel safety for dynamically loaded mods; integration remains behind the gate described above.
+
+Acceptance command (not validation of the default build, which keeps the loop serial):
 
 ```sh
 cargo test -p horizon-client --lib game::creatures::mob_islands:: -- --include-ignored --test-threads=1
