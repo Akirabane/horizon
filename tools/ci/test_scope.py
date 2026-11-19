@@ -112,6 +112,7 @@ SCANNED = {"horizon-client-core": ["crates"]}
 NOT_READS = {
     "horizon-client": {"crates"}, "horizon-client-lib": {"crates"}, "horizon-mod-package": {"crates"},
     "horizon-mod-vocab": {"."}, "horizon-port-pack": {"mods"}, "horizon-prepare": {"crates"},
+    "horizon-server-launch": {"crates"},
 }
 
 
