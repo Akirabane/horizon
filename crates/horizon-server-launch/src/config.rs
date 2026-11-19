@@ -1160,12 +1160,12 @@ keep = {keep}
     /// that block loads, and loads as the defaults.
     #[test]
     fn the_hosting_guides_server_toml_block_is_the_default() {
-        let docs = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/hosting.md"
-        ))
-        .unwrap()
-        .replace("\r\n", "\n");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("docs/hosting.md");
+        let docs = std::fs::read_to_string(path)
+            .unwrap()
+            .replace("\r\n", "\n");
         let block = docs
             .split("```toml\n[server]\n")
             .nth(1)
