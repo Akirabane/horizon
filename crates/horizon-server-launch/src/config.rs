@@ -1163,9 +1163,7 @@ keep = {keep}
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join("docs/hosting.md");
-        let docs = std::fs::read_to_string(path)
-            .unwrap()
-            .replace("\r\n", "\n");
+        let docs = std::fs::read_to_string(path).unwrap().replace("\r\n", "\n");
         let block = docs
             .split("```toml\n[server]\n")
             .nth(1)
